@@ -16,6 +16,7 @@ import type { Language } from '@/types'
 export const CHARS_PER_MINUTE: Record<Language, number> = {
   vi: 900,
   en: 1000,
+  th: 700,
   ja: 350,
   ko: 330,
   zh: 260,
@@ -23,7 +24,7 @@ export const CHARS_PER_MINUTE: Record<Language, number> = {
 }
 
 /** Ngôn ngữ không tách từ bằng dấu cách — phải đếm theo ký tự. */
-const SPACELESS: Language[] = ['ja', 'zh']
+const SPACELESS: Language[] = ['th', 'ja', 'zh']
 
 /** Giới hạn hợp lệ cho tốc độ đọc tự khai (ký tự/phút). */
 export const READING_SPEED_MIN = 100

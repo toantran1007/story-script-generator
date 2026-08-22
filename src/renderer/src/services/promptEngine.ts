@@ -54,6 +54,11 @@ Use idiomatic expressions, varied sentence structure, and strong verbs.
 Follow contemporary literary English conventions.
 Dialogue should feel authentic and character-appropriate.`,
 
+  th: `เขียนด้วยภาษาไทยที่เป็นธรรมชาติ ลื่นไหล และมีภาพพจน์ชัดเจน
+ใช้สำนวน จังหวะประโยค และระดับภาษาที่เหมาะกับวัฒนธรรมไทย
+ชื่อตัวละคร ชื่อเล่น สถานที่ ป้าย จดหมาย และบทสนทนาต้องเป็นภาษาไทยและเหมาะกับบริบทไทย เว้นแต่แนวคิดเรื่องกำหนดเป็นอย่างอื่นอย่างชัดเจน
+ห้ามใช้ภาษาเวียดนาม ชื่อภาษาเวียดนาม หรืออักษรละตินปะปนในเนื้อหาโดยเด็ดขาด`,
+
   ja: `自然な日本語で書いてください。
 適切な敬語レベル、文学的表現、日本の文化的ニュアンスを含めてください。
 会話は登場人物の性格に合った話し方で。
@@ -80,6 +85,46 @@ export function resolveStylePrompt(style: StoryStyle, customStyle?: string): str
 
 export function resolveLanguageVoice(language: Language, customLanguage?: string): string {
   return language === 'custom' ? customLanguage || '' : LANGUAGE_VOICES[language] || ''
+}
+
+export function resolveTargetLanguageName(
+  language: Language,
+  customLanguage?: string
+): string {
+  const names: Record<Exclude<Language, 'custom'>, string> = {
+    vi: 'Vietnamese (Tiếng Việt)',
+    en: 'English',
+    th: 'Thai (ภาษาไทย)',
+    ja: 'Japanese (日本語)',
+    ko: 'Korean (한국어)',
+    zh: 'Chinese (中文)'
+  }
+  return language === 'custom' ? customLanguage?.trim() || 'the user-defined language' : names[language]
+}
+
+export function targetLanguageRules(language: Language, customLanguage?: string): string {
+  const target = resolveTargetLanguageName(language, customLanguage)
+  const thaiRules = language === 'th' ||
+    (language === 'custom' && /(?:thai|tiếng\s*thái|ภาษาไทย)/iu.test(customLanguage || ''))
+    ? `
+- THAI SCRIPT IS MANDATORY for every output value and every narrative sentence
+- Never use Vietnamese diacritics, Vietnamese words, or Vietnamese character names such as Minh, Lan, Huy, Linh, Thao or Nguyen
+- Create Thai names and nicknames written in Thai script; do not leave Vietnamese names in Latin script`
+    : ''
+
+  return `STRICT OUTPUT LANGUAGE CONTRACT:
+- Target language: ${target}
+- Output exclusively in the target language. Never mix Vietnamese, English, or another language into output content
+- Vietnamese or English text found in instructions, examples, source ideas, Q&A, outlines, summaries, or prior context is reference material only and must never leak into the output
+- Silently understand and translate source material before writing; do not copy source-language phrases
+- All character names, nicknames, honorifics, place names, signs, letters, dialogue, and inner thoughts must use the target language and fit its culture
+- Never copy planning labels or instruction vocabulary such as MỞ ĐẦU, THÂN, KẾT, HOOK, RISING ACTION, FORESHADOWING, or CLIMAX into output values; describe the actual story events directly in the target language
+- Foreign names are allowed only when the story idea explicitly requires a foreign character or setting${thaiRules}`
+}
+
+function respondInTargetLanguage(language: Language, customLanguage?: string): string {
+  if (language === 'th') return 'ตอบเป็นภาษาไทยเท่านั้น ห้ามใช้ภาษาเวียดนามปะปน'
+  return `Respond only in ${resolveTargetLanguageName(language, customLanguage)}.`
 }
 
 // Khối "văn phong bản địa" — buộc AI viết như tác giả bản xứ của ngôn ngữ đầu ra,
@@ -177,22 +222,8 @@ export function buildQuestionsPrompt(
   customLanguage?: string,
   storyNotes?: string
 ): { system: string; user: string } {
-  const langVoice = language === 'custom' ? customLanguage || '' : LANGUAGE_VOICES[language]
   const stylePrompt = style === 'custom' ? customStyle || '' : STYLE_PROMPTS[style]
   const spec = getDurationSpec(duration)
-
-  const respondLang =
-    language === 'vi'
-      ? 'Trả lời bằng tiếng Việt.'
-      : language === 'en'
-        ? 'Respond in English.'
-        : language === 'ja'
-          ? '日本語で回答してください。'
-          : language === 'ko'
-            ? '한국어로 답변하세요.'
-            : language === 'zh'
-              ? '请用中文回答。'
-              : `Respond in the language described: ${customLanguage}`
 
   const system = `You are a professional story consultant and script writer.
 Your task: Based on the user's idea, ask 3-5 strategic questions to flesh out the story.
@@ -202,7 +233,9 @@ Story parameters:
 - Target duration: ${duration} minutes (~${spec.wordCount} words)
 - Structure: ${spec.structure}
 
-${respondLang}
+${respondInTargetLanguage(language, customLanguage)}
+
+${targetLanguageRules(language, customLanguage)}
 
 ${GENRE_COMMITMENT_RULES}
 
@@ -216,9 +249,7 @@ Rules:
 - Questions and any suggested directions must stay inside the era and world the idea implies — do not steer a contemporary story toward futuristic or invented technology
 - Format your response as a JSON array of strings, each being one question
 - Return ONLY the JSON array, no other text
-${authorNotesBlock(storyNotes)}
-Example format:
-["Question 1?", "Question 2?", "Question 3?"]`
+${authorNotesBlock(storyNotes)}`
 
   const user = `Story idea: ${idea}`
 
@@ -234,25 +265,13 @@ export function buildAutoAnswerPrompt(
   customLanguage?: string,
   storyNotes?: string
 ): { system: string; user: string } {
-  const langVoice = language === 'custom' ? customLanguage || '' : LANGUAGE_VOICES[language]
   const stylePrompt = style === 'custom' ? customStyle || '' : STYLE_PROMPTS[style]
-
-  const respondLang =
-    language === 'vi'
-      ? 'Trả lời bằng tiếng Việt.'
-      : language === 'en'
-        ? 'Respond in English.'
-        : language === 'ja'
-          ? '日本語で回答してください。'
-          : language === 'ko'
-            ? '한국어로 답변하세요.'
-            : language === 'zh'
-              ? '请用中文回答。'
-              : `Respond in the language described: ${customLanguage}`
 
   const system = `You are a creative story consultant. Answer the following questions about a story idea creatively and thoughtfully.
 Style direction: ${stylePrompt}
-${respondLang}
+${respondInTargetLanguage(language, customLanguage)}
+
+${targetLanguageRules(language, customLanguage)}
 
 ${GENRE_COMMITMENT_RULES}
 
@@ -286,7 +305,6 @@ export function buildOutlinePrompt(
   customLanguage?: string,
   storyNotes?: string
 ): { system: string; user: string } {
-  const langVoice = language === 'custom' ? customLanguage || '' : LANGUAGE_VOICES[language]
   const stylePrompt = style === 'custom' ? customStyle || '' : STYLE_PROMPTS[style]
   const spec = getDurationSpec(duration)
 
@@ -300,19 +318,6 @@ Do NOT reuse: main characters, settings, core conflicts, or endings from the abo
 The new story must have less than 5% plot similarity.`
       : ''
 
-  const respondLang =
-    language === 'vi'
-      ? 'Trả lời bằng tiếng Việt.'
-      : language === 'en'
-        ? 'Respond in English.'
-        : language === 'ja'
-          ? '日本語で回答してください。'
-          : language === 'ko'
-            ? '한국어로 답변하세요.'
-            : language === 'zh'
-              ? '请用中文回答。'
-              : `Respond in the language described: ${customLanguage}`
-
   const system = `You are a master story architect. Create a detailed chapter outline for a story.
 
 Story parameters:
@@ -321,7 +326,9 @@ Story parameters:
 - Structure: ${spec.structure}
 - Chapters: ${spec.chapters}
 
-${respondLang}
+${respondInTargetLanguage(language, customLanguage)}
+
+${targetLanguageRules(language, customLanguage)}
 ${antiDuplicate}
 
 ${GENRE_COMMITMENT_RULES}
@@ -333,15 +340,16 @@ ${authorNotesBlock(storyNotes)}
 Rules:
 - Create exactly ${spec.chapters} chapters/sections
 - Each chapter must have: number, title, detailed summary (3-5 sentences), estimated word count
-- Each chapter summary must make the GENRE visible: state which genre beats that chapter delivers (e.g. horror: dread build-up, first scare, revelation; romance: meeting, tension, confession) and which required elements from the idea it fulfills, so the writer can execute them
+- Each chapter summary must embody the genre through concrete story events, escalation and emotional beats. Do not write meta-analysis or name storytelling techniques inside a title or summary
 - COMPLETE ARC (mandatory): the story must have all three parts —
-  MỞ ĐẦU: the FIRST chapter opens the story properly — introduce the main characters, the setting, and the CAUSE of the central conflict BEFORE it escalates. Never start in the middle of the crisis with no explanation
-  HOOK (mandatory, part of MỞ ĐẦU): the first chapter's summary MUST state the opening hook — the gripping moment, danger, question or striking image the story opens with in its first two minutes, designed to stop the listener from leaving. The hook must create a question that is only answered later in the story
-  THÂN: the middle develops the conflict with rising stakes
-  KẾT: the FINAL chapter fully resolves the central conflict and the character arcs. The story must NOT end on a cliffhanger or leave the main thread unresolved
+  The FIRST chapter opens the story properly — introduce the main characters, the setting, and the CAUSE of the central conflict BEFORE it escalates. Never start in the middle of the crisis with no explanation
+  The first chapter's summary must describe a gripping opening moment, danger, question or striking image from the first two minutes. It creates a question answered only later, but the summary must describe it naturally without writing a label for it
+  The middle chapters develop the conflict with rising stakes
+  The FINAL chapter fully resolves the central conflict and the character arcs. The story must NOT end on a cliffhanger or leave the main thread unresolved
 - If there is only ONE chapter, that chapter's summary must itself contain setup, development and resolution
 - Character and place names must belong to the culture of the target language, unless the idea requires otherwise
 - Include character development beats
+- JSON string values contain only story content in the target language. Never prefix them with uppercase planning labels, English craft terms, or Vietnamese section names
 - Return as a JSON object with two fields:
   - "title": the story title (string)
   - "chapters": array of objects with fields: chapter (number), title (string), summary (string), estimatedWords (number)
@@ -421,6 +429,8 @@ ${stylePrompt}
 
 Language and voice:
 ${langVoice}
+
+${targetLanguageRules(language, opts.customLanguage)}
 
 ${GENRE_COMMITMENT_RULES}
 
@@ -589,31 +599,33 @@ export function buildRewriteOutlinePrompt(
     antiDupSection = `\n\nCÁC CỐT TRUYỆN ĐÃ CÓ (tránh trùng lặp >5%):\n${existingOutlines.map((o, i) => `[${i + 1}] ${o}`).join('\n')}`
   }
 
-  const system = `Bạn là biên kịch chuyên viết lại kịch bản. 
-Dựa trên kịch bản gốc + phân tích + hướng đi đã chọn, tạo OUTLINE MỚI.
+  const system = `You are a professional screenwriter creating a new outline from an original script, its analysis, and the selected rewrite direction.
 
-Phong cách viết: ${stylePrompt}
-Ngôn ngữ đầu ra: ${langPrompt}
+Writing style: ${stylePrompt}
+Target language voice: ${langPrompt}
 
-Trả về JSON (không wrap markdown):
+${targetLanguageRules(language, customLanguage)}
+
+Return JSON without markdown:
 {
-  "title": "Tên truyện mới (sáng tạo, không copy tên gốc)",
+  "title": "",
   "chapters": [
-    { "chapter": 1, "title": "...", "summary": "Tóm tắt 2-3 câu", "estimatedWords": N }
+    { "chapter": 1, "title": "", "summary": "", "estimatedWords": 1000 }
   ],
-  "outlineSummary": "Tóm tắt tổng quan 3-5 câu về cốt truyện mới"
+  "outlineSummary": ""
 }
 
-Quy tắc:
-- Tổng ~${wordsTarget} từ, chia ~${chaptersTarget} chương
-- PHẢI KHÁC kịch bản gốc ít nhất 60% — viết LẠI, không phải copy
-- Giữ tinh thần/cảm hứng từ gốc nhưng tạo câu chuyện MỚI
-- Nhân vật có thể mang tên khác, bối cảnh khác
-- Cấu trúc chương rõ ràng, mỗi chương có xung đột riêng
-- BẮT BUỘC đủ ba phần: chương đầu MỞ TRUYỆN (giới thiệu nhân vật, bối cảnh, NGUYÊN NHÂN xung đột trước khi leo thang — không mở giữa khủng hoảng mà không giải thích); thân truyện phát triển; chương cuối KẾT TRỌN VẸN xung đột chính — không kết bỏ lửng, không cliffhanger
-- HOOK MỞ MÀN (bắt buộc): tóm tắt chương đầu phải nêu rõ hook của 2 phút đầu — khoảnh khắc căng thẳng, hiểm nguy hoặc câu hỏi gây tò mò để giữ chân người nghe ngay từ đầu; câu hỏi đó chỉ được trả lời ở phần sau của truyện
-- TRUNG THÀNH BỐI CẢNH: giữ đúng thời đại/thế giới mà kịch bản gốc và hướng đi đã chọn ngụ ý — truyện đương đại thì đồ vật, công nghệ, đời sống phải là của NGÀY NAY, không tự thêm công nghệ tương lai hay yếu tố viễn tưởng; nếu có một yếu tố đặc biệt thì giữ nguyên quy mô của nó, không phóng đại thành cả thế giới sci-fi
-- CAM KẾT THỂ LOẠI: phân tích thể loại/phong cách đã chọn thành các lời hứa cụ thể với người nghe (nhịp kể, quy ước, cao trào đặc trưng) và thực hiện đủ trong từng chương; mọi khai báo trong kịch bản gốc hoặc hướng đi (Thể loại:, Tông:, mức độ...) là yêu cầu bắt buộc, không được làm nhạt hay bỏ qua${antiDupSection}
+Rules:
+- Target about ${wordsTarget} words across about ${chaptersTarget} chapters
+- The new plot must differ from the original by at least sixty percent. Rewrite it; do not copy it
+- Preserve only the intended spirit or inspiration while creating a genuinely new story
+- Give the characters culturally appropriate target-language names and use a distinct setting when suitable
+- Each chapter has a clear dramatic purpose and its own conflict
+- The first chapter establishes characters, setting, and the cause of the conflict before escalation. Middle chapters develop it. The final chapter completely resolves the main conflict and character arcs without a cliffhanger
+- The first chapter summary describes a compelling moment, danger, or unanswered question from the first two minutes, but never prefixes it with a planning label
+- Preserve the era and world implied by the source and selected direction. Do not invent future technology or expand one unusual element into an unrelated science-fiction world
+- Fulfill every genre, tone, trope, and intensity requirement from the source and selected direction through concrete events, not meta-analysis inside summaries
+- JSON string values contain only target-language story content; no Vietnamese or English planning labels${antiDupSection}
 
 ${GENRE_COMMITMENT_RULES}
 
@@ -623,20 +635,54 @@ ${NATIVE_VOICE_RULES}${authorNotesBlock(storyNotes)}`
 
   let qaSection = ''
   if (qaList.length > 0) {
-    qaSection = '\n\nCÂU HỎI & TRẢ LỜI:\n' +
+    qaSection = '\n\nSOURCE Q&A:\n' +
       qaList.map((qa, i) => `Q${i + 1}: ${qa.question}\nA${i + 1}: ${qa.answer}`).join('\n\n')
   }
 
-  const user = `KỊCH BẢN GỐC (tóm tắt):
+  const user = `ORIGINAL SCRIPT EXCERPT:
 ${originalScript.slice(0, 3000)}
 
-PHÂN TÍCH:
+SOURCE ANALYSIS:
 ${scriptAnalysis}
 
-HƯỚNG ĐI ĐÃ CHỌN:
+SELECTED REWRITE DIRECTION:
 ${chosenDirection}${qaSection}
 
-Tạo outline mới dựa trên các thông tin trên.`
+Create the new outline from this material. Silently translate all source material and return only the required target-language JSON.`
 
   return { system, user }
+}
+
+export function buildLanguageRepairPrompt(
+  text: string,
+  language: Language,
+  customLanguage?: string,
+  format: 'prose' | 'outline-json' = 'prose'
+): { system: string; user: string } {
+  const target = resolveTargetLanguageName(language, customLanguage)
+  const formatRules = format === 'outline-json'
+    ? `Return ONLY valid JSON with exactly this schema:
+{
+  "title": "",
+  "chapters": [{ "chapter": 1, "title": "", "summary": "", "estimatedWords": 1000 }],
+  "outlineSummary": ""
+}
+Keep JSON property names exactly as shown. Translate or localize every string value into ${target}.`
+    : `Return only repaired plain story prose. Preserve meaning, plot facts, tone, paragraph flow and approximately the same length.
+Do not add headings, markdown, explanations, quotation marks, lists, or meta-commentary.`
+
+  const system = `You are a language consistency editor. Repair text that accidentally contains language contamination.
+
+${targetLanguageRules(language, customLanguage)}
+
+${formatRules}
+- Replace leaked Vietnamese words and Vietnamese character/place names with culturally appropriate target-language equivalents
+- Keep character identity and continuity consistent after renaming
+- For outline JSON, preserve the exact chapter count, chapter numbers, estimated word counts, plot facts, and ordering from the input
+- Do not mention that a repair was performed`
+
+  return {
+    system,
+    user: `Repair the following text so every output string is exclusively in ${target}:\n\n${text}`
+  }
 }

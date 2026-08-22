@@ -17,7 +17,7 @@ export type StoryStyle =
   | 'slice_of_life'
   | 'custom'
 
-export type Language = 'vi' | 'en' | 'ja' | 'ko' | 'zh' | 'custom'
+export type Language = 'vi' | 'en' | 'th' | 'ja' | 'ko' | 'zh' | 'custom'
 
 export type ProjectStatus = 'draft' | 'questions' | 'outline' | 'writing' | 'done'
 export type OutlinePhase = 'idle' | 'generating-outline' | 'reviewing' | 'writing' | 'done'
@@ -332,6 +332,7 @@ export const STYLE_LABELS: Record<StoryStyle, Record<string, string>> = {
 export const LANGUAGE_LABELS: Record<Language, string> = {
   vi: 'Tiếng Việt',
   en: 'English',
+  th: 'ภาษาไทย',
   ja: '日本語',
   ko: '한국어',
   zh: '中文',

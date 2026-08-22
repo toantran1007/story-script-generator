@@ -27,20 +27,45 @@ import {
   buildChapterChunkPrompt,
   buildViSummaryPrompt,
   buildScriptAnalysisPrompt,
-  buildRewriteOutlinePrompt
+  buildRewriteOutlinePrompt,
+  buildLanguageRepairPrompt
 } from '@/services/promptEngine'
 import { checkDuplicate } from '@/services/similarityCheck'
 import { stripNarrationMarkup } from '@/services/textCleanup'
 import { distributeCharBudget, targetCharsFor, hookCharsFor } from '@/services/textMetrics'
+import { hasTargetLanguageLeak } from '@/services/languageGuard'
 
 // ===== Helpers =====
 function safeParseJSON<T>(text: string): T | null {
-  try {
-    const cleaned = text.replace(/```json\s*/gi, '').replace(/```\s*/g, '').trim()
-    return JSON.parse(cleaned)
-  } catch {
-    return null
+  const cleaned = text.replace(/```json\s*/gi, '').replace(/```\s*/g, '').trim()
+  const candidates = [cleaned]
+  const objectStart = cleaned.indexOf('{')
+  const objectEnd = cleaned.lastIndexOf('}')
+  const arrayStart = cleaned.indexOf('[')
+  const arrayEnd = cleaned.lastIndexOf(']')
+  if (objectStart >= 0 && objectEnd > objectStart) {
+    candidates.push(cleaned.slice(objectStart, objectEnd + 1))
   }
+  if (arrayStart >= 0 && arrayEnd > arrayStart) {
+    candidates.push(cleaned.slice(arrayStart, arrayEnd + 1))
+  }
+
+  for (const candidate of candidates) {
+    try {
+      return JSON.parse(candidate)
+    } catch {
+      // Try the next JSON-shaped section when the provider adds surrounding text.
+    }
+  }
+  return null
+}
+
+function outlineLanguageText(outline: Outline): string {
+  return [
+    outline.title,
+    outline.outlineSummary,
+    ...outline.chapters.flatMap((chapter) => [chapter.title, chapter.summary])
+  ].join('\n')
 }
 
 function ts(): string {
@@ -358,6 +383,7 @@ export const useAppStore = create<AppState>((set, get) => {
       })
 
       try {
+        const streamPrefix = (get().runtimes[pid] || defaultRuntime()).streamingText
         const rawChunk = await chatStream(
           [{ role: 'system', content: system }, { role: 'user', content: user }],
           (token) => {
@@ -372,7 +398,23 @@ export const useAppStore = create<AppState>((set, get) => {
         )
 
         // Bỏ tiêu đề / nhãn chương / ký hiệu markdown để văn bản đọc được ngay
-        const cleanChunk = stripNarrationMarkup(rawChunk)
+        let cleanChunk = stripNarrationMarkup(rawChunk)
+        if (hasTargetLanguageLeak(cleanChunk, language, customLanguage)) {
+          addLog(pid, 'warn', `Phát hiện khối ${chunk + 1} bị lẫn ngôn ngữ — đang tự sửa`)
+          updateRuntimeFor(pid, { generationProgress: `Đang sửa ngôn ngữ khối ${chunk + 1}...` })
+          const repair = buildLanguageRepairPrompt(cleanChunk, language, customLanguage)
+          const repaired = stripNarrationMarkup(await chat(
+            [{ role: 'system', content: repair.system }, { role: 'user', content: repair.user }],
+            undefined,
+            pid
+          ))
+          if (hasTargetLanguageLeak(repaired, language, customLanguage)) {
+            throw new Error(`Khối ${chunk + 1} vẫn bị lẫn ngôn ngữ sau khi tự sửa`)
+          }
+          cleanChunk = repaired
+          updateRuntimeFor(pid, { streamingText: streamPrefix + cleanChunk })
+          addLog(pid, 'success', `Đã sửa ngôn ngữ khối ${chunk + 1}`)
+        }
 
         // Khối mới thường bắt đầu ngay bằng chữ; nếu không có khoảng trắng ở chỗ nối
         // thì câu cuối khối trước sẽ dính liền câu đầu khối sau. Khi viết tiếp sau khi
@@ -747,7 +789,7 @@ export const useAppStore = create<AppState>((set, get) => {
           )
           outlineResp = await chat(
             [{ role: 'system', content: oS }, { role: 'user', content: oU }],
-            undefined,
+            { temperature: 0.4 },
             pid
           )
         } else {
@@ -757,13 +799,38 @@ export const useAppStore = create<AppState>((set, get) => {
           )
           outlineResp = await chat(
             [{ role: 'system', content: oS }, { role: 'user', content: oU }],
-            undefined,
+            { temperature: 0.4 },
             pid
           )
         }
 
-        const outline = safeParseJSON<Outline>(outlineResp)
+        let outline = safeParseJSON<Outline>(outlineResp)
         if (!outline || !outline.chapters || !outline.title) throw new Error('Không thể phân tích outline')
+
+        if (hasTargetLanguageLeak(outlineLanguageText(outline), p.language, p.customLanguage)) {
+          addLog(pid, 'warn', 'Phát hiện dàn ý bị lẫn ngôn ngữ — đang tự sửa trước khi viết')
+          updateRuntimeFor(pid, { generationProgress: 'Đang sửa ngôn ngữ dàn ý...' })
+          const repair = buildLanguageRepairPrompt(
+            JSON.stringify(outline),
+            p.language,
+            p.customLanguage,
+            'outline-json'
+          )
+          const repairedResp = await chat(
+            [{ role: 'system', content: repair.system }, { role: 'user', content: repair.user }],
+            { temperature: 0.2 },
+            pid
+          )
+          const repairedOutline = safeParseJSON<Outline>(repairedResp)
+          if (!repairedOutline || !repairedOutline.chapters || !repairedOutline.title) {
+            throw new Error('Không thể phân tích dàn ý sau khi sửa ngôn ngữ')
+          }
+          if (hasTargetLanguageLeak(outlineLanguageText(repairedOutline), p.language, p.customLanguage)) {
+            throw new Error('Dàn ý vẫn bị lẫn ngôn ngữ sau khi tự sửa')
+          }
+          outline = repairedOutline
+          addLog(pid, 'success', 'Đã sửa ngôn ngữ dàn ý')
+        }
 
         updateProjectById(pid, { outline, outlineSummary: outline.outlineSummary })
         addLog(pid, 'success', `Dàn ý: "${outline.title}" — ${outline.chapters.length} chương`)
