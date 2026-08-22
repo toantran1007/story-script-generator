@@ -1,0 +1,47 @@
+{
+  "name": "story-script-generator",
+  "version": "1.12.3",
+  "description": "Electron app to generate diverse story scripts from ideas via AI",
+  "main": "./out/main/index.js",
+  "author": "kichban",
+  "license": "MIT",
+  "scripts": {
+    "ensure:electron": "node scripts/ensure-electron.mjs",
+    "predev": "npm run ensure:electron",
+    "dev": "electron-vite dev",
+    "prebuild": "npm run ensure:electron",
+    "build": "electron-vite build",
+    "postinstall": "npm run ensure:electron && electron-builder install-app-deps",
+    "prebuild:unpack": "npm run ensure:electron",
+    "build:unpack": "electron-builder --dir",
+    "prebuild:win": "npm run ensure:electron",
+    "build:win": "electron-vite build && electron-builder --win",
+    "prerelease": "npm run ensure:electron",
+    "release": "electron-vite build && electron-builder --win --publish always",
+    "typecheck:node": "tsc --noEmit -p tsconfig.node.json",
+    "typecheck:web": "tsc --noEmit -p tsconfig.web.json",
+    "typecheck": "npm run typecheck:node && npm run typecheck:web",
+    "docs:codebase": "node scripts/gen-full-codebase.mjs"
+  },
+  "dependencies": {
+    "electron-store": "^8.2.0",
+    "electron-updater": "^6.8.9",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "uuid": "^11.1.0",
+    "zustand": "^5.0.0"
+  },
+  "devDependencies": {
+    "@electron-toolkit/preload": "^3.0.1",
+    "@electron-toolkit/utils": "^4.0.0",
+    "@types/react": "^19.1.0",
+    "@types/react-dom": "^19.1.0",
+    "@types/uuid": "^10.0.0",
+    "@vitejs/plugin-react": "^4.4.0",
+    "electron": "^43.4.1",
+    "electron-builder": "^26.15.3",
+    "electron-vite": "^3.1.0",
+    "typescript": "^5.8.0",
+    "vite": "^6.3.0"
+  }
+}

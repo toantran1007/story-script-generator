@@ -1,0 +1,25 @@
+appId: com.kichban.story-generator
+productName: Story Script Generator
+directories:
+  buildResources: build
+files:
+  - out/**/*
+  - package.json
+win:
+  executableName: StoryScriptGenerator
+  target:
+    - nsis
+    - portable
+nsis:
+  artifactName: ${name}-${version}-setup.${ext}
+  shortcutName: ${productName}
+  uninstallDisplayName: ${productName}
+  createDesktopShortcut: always
+# Tự cập nhật qua GitHub Releases (electron-updater đọc cấu hình này).
+# owner = tên tài khoản GitHub của bạn; repo phải là repo PUBLIC (chỉ cần chứa release,
+# không cần đẩy source code lên).
+publish:
+  provider: github
+  owner: toantran1007
+  repo: story-script-generator
+  releaseType: release

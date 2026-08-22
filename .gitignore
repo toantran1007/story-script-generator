@@ -1,0 +1,7 @@
+node_modules/
+dist/
+out/
+.gh_token
+.agents/
+FULL_CODEBASE.md
+electron.vite.config.*.mjs
