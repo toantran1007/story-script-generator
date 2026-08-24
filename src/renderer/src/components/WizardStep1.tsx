@@ -1,7 +1,14 @@
-import type { JSX } from 'react'
+import { useEffect, useState, type JSX } from 'react'
 import { useAppStore } from '@/stores/storyStore'
 import { StopButton } from '@/components/StopButton'
-import { targetCharsFor, charsPerMinute, READING_SPEED_MIN, READING_SPEED_MAX } from '@/services/textMetrics'
+import {
+  targetCharsFor,
+  charsPerMinute,
+  READING_SPEED_MIN,
+  READING_SPEED_MAX,
+  DURATION_MIN,
+  DURATION_MAX
+} from '@/services/textMetrics'
 import type { StoryStyle, Language } from '@/types'
 import { STYLE_LABELS, LANGUAGE_LABELS } from '@/types'
 
@@ -17,7 +24,7 @@ function getChapterEstimate(minutes: number): string {
   if (minutes <= 30) return '3 chương'
   if (minutes <= 45) return '5 chương'
   if (minutes <= 60) return '7 chương'
-  return `${Math.ceil(minutes / 8)} chương`
+  return `${Math.min(30, Math.ceil(minutes / 8))} chương`
 }
 
 export function WizardStep1(): JSX.Element {
@@ -27,7 +34,7 @@ export function WizardStep1(): JSX.Element {
   const savedStyles = useAppStore((s) => s.savedStyles)
   const savedLanguages = useAppStore((s) => s.savedLanguages)
   const {
-    setIdea, setStoryNotes, setAutoFlow, setStyle, setCustomStyle, setLanguage,
+    setIdea, setStoryNotes, setAutoFlow, setEnableHook, setStyle, setCustomStyle, setLanguage,
     setCustomLanguage, setDuration, setReadingSpeed, setMode,
     setOriginalScript,
     generateQuestions, analyzeScript,
@@ -35,6 +42,11 @@ export function WizardStep1(): JSX.Element {
     saveCustomStylePreset, deleteCustomStylePreset,
     saveCustomLanguagePreset, deleteCustomLanguagePreset
   } = useAppStore()
+  const [durationInput, setDurationInput] = useState('30')
+
+  useEffect(() => {
+    setDurationInput(String(p?.duration ?? 30))
+  }, [p?.id, p?.duration])
 
   if (!p) return <div />
 
@@ -253,22 +265,48 @@ export function WizardStep1(): JSX.Element {
       </div>
 
       <div className="form-group">
-        <label className="form-label">Thời lượng truyện: {p.duration} phút</label>
+        <label className="form-label">⏱ Thời lượng truyện</label>
         <div className="duration-control">
           <input
-            type="range"
-            className="duration-slider"
-            min={5}
-            max={120}
-            step={5}
-            value={p.duration}
-            onChange={(e) => setDuration(Number(e.target.value))}
+            type="number"
+            className="form-input duration-input"
+            min={DURATION_MIN}
+            max={DURATION_MAX}
+            step={1}
+            value={durationInput}
+            onChange={(e) => {
+              const value = e.target.value
+              setDurationInput(value)
+              if (value !== '') setDuration(Number(value))
+            }}
+            onBlur={() => setDurationInput(String(p.duration))}
           />
           <span className="duration-value">{p.duration} phút</span>
         </div>
         <div className="duration-estimate">
           {getLengthEstimate(p.duration, p.language, p.readingSpeed)} · {getChapterEstimate(p.duration)}
           {p.duration >= 30 && ' · Sinh từng chương để đảm bảo chất lượng'}
+        </div>
+        <div className="form-hint">
+          Nhập số phút mong muốn, từ {DURATION_MIN} đến {DURATION_MAX} phút.
+        </div>
+      </div>
+
+      <div className="form-group">
+        <label className="checkbox-row">
+          <input
+            type="checkbox"
+            checked={p.enableHook !== false}
+            onChange={(e) => setEnableHook(e.target.checked)}
+          />
+          <span>
+            🪝 <strong>Tạo hook mở đầu</strong> — mở truyện bằng tình huống hoặc câu hỏi giữ chân người nghe
+          </span>
+        </label>
+        <div className="form-hint">
+          {p.enableHook !== false
+            ? 'Dàn ý và khoảng hai phút đầu sẽ được thiết kế để tạo tò mò, căng thẳng hoặc stakes rõ ràng.'
+            : 'Truyện sẽ bắt đầu tự nhiên theo bối cảnh và nhân vật, không ép tạo hook hoặc curiosity loop.'}
         </div>
       </div>
 

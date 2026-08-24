@@ -19,6 +19,7 @@ interface ProjectRecord {
   language: string
   customLanguage: string
   duration: number
+  enableHook?: boolean
   readingSpeed?: number
   mode: string
   currentStep: number

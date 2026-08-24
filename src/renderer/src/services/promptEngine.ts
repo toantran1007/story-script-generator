@@ -156,6 +156,20 @@ export const SETTING_FIDELITY_RULES = `SETTING & ERA FIDELITY — ground the sto
 - If the idea includes ONE extraordinary element (a secret experiment, a magical object, a supernatural event), keep that element at EXACTLY the scale the idea gives it — do not enlarge it into full science-fiction or fantasy world-building. Everything AROUND that element stays ordinary, recognizable and true to the era
 - Fantasy, sci-fi or another-world settings are used ONLY when the idea clearly calls for them; historical settings must stay period-accurate with no anachronisms`
 
+export function openingStrategyRules(enableHook: boolean): string {
+  if (enableHook) {
+    return `OPENING STRATEGY — CREATE AN AUDIENCE HOOK:
+- Open with a gripping situation, striking image, meaningful danger, consequential decision, or concrete unanswered question
+- Make the stakes clear in the first two minutes and create a curiosity loop answered later
+- Establish character and setting around the hook without delaying it with an information dump`
+  }
+
+  return `OPENING STRATEGY — NATURAL OPENING WITHOUT A FORCED HOOK:
+- Begin by naturally establishing the main character, setting, daily context, and cause of the conflict
+- Do not use a cold open, teaser, curiosity loop, withheld mystery question, immediate shock, or artificial danger solely to retain the audience
+- Let tension and stakes emerge gradually from the story instead of forcing them into the first two minutes`
+}
+
 // Ghi chú của tác giả — chèn vào mọi prompt khi người dùng có nhập
 export function authorNotesBlock(storyNotes?: string): string {
   const notes = storyNotes?.trim()
@@ -168,30 +182,33 @@ function getDurationSpec(minutes: number): {
   structure: string
   chapters: number
 } {
+  const minWords = Math.max(100, Math.round(minutes * 180))
+  const maxWords = Math.max(minWords, Math.round(minutes * 220))
+  const wordCount = `${minWords}-${maxWords}`
   if (minutes <= 10) {
     return {
-      wordCount: '1000-2000',
+      wordCount,
       structure: 'Single act: introduction → rising action → climax → resolution',
       chapters: 1
     }
   }
   if (minutes <= 20) {
     return {
-      wordCount: '2000-4000',
+      wordCount,
       structure: '2 acts with a light subplot. Clear turning point between acts.',
       chapters: 2
     }
   }
   if (minutes <= 30) {
     return {
-      wordCount: '4000-6000',
+      wordCount,
       structure: '3 acts (setup, confrontation, resolution). 2-3 main characters, one subplot.',
       chapters: 3
     }
   }
   if (minutes <= 45) {
     return {
-      wordCount: '6000-9000',
+      wordCount,
       structure:
         '3 detailed acts with world-building. Multiple characters with distinct arcs. 2+ subplots.',
       chapters: 5
@@ -199,17 +216,17 @@ function getDurationSpec(minutes: number): {
   }
   if (minutes <= 60) {
     return {
-      wordCount: '9000-12000',
+      wordCount,
       structure:
         'Multi-chapter story with deep character development. Multiple interweaving plot lines. Rich world-building.',
       chapters: 7
     }
   }
   return {
-    wordCount: '12000+',
+    wordCount,
     structure:
       'Epic multi-chapter narrative. Complex character arcs, multiple factions/perspectives. Detailed world and lore.',
-    chapters: Math.ceil(minutes / 8)
+    chapters: Math.min(30, Math.ceil(minutes / 8))
   }
 }
 
@@ -303,7 +320,8 @@ export function buildOutlinePrompt(
   existingOutlines: string[],
   customStyle?: string,
   customLanguage?: string,
-  storyNotes?: string
+  storyNotes?: string,
+  enableHook = true
 ): { system: string; user: string } {
   const stylePrompt = style === 'custom' ? customStyle || '' : STYLE_PROMPTS[style]
   const spec = getDurationSpec(duration)
@@ -335,6 +353,8 @@ ${GENRE_COMMITMENT_RULES}
 
 ${SETTING_FIDELITY_RULES}
 
+${openingStrategyRules(enableHook)}
+
 ${NATIVE_VOICE_RULES}
 ${authorNotesBlock(storyNotes)}
 Rules:
@@ -343,7 +363,9 @@ Rules:
 - Each chapter summary must embody the genre through concrete story events, escalation and emotional beats. Do not write meta-analysis or name storytelling techniques inside a title or summary
 - COMPLETE ARC (mandatory): the story must have all three parts —
   The FIRST chapter opens the story properly — introduce the main characters, the setting, and the CAUSE of the central conflict BEFORE it escalates. Never start in the middle of the crisis with no explanation
-  The first chapter's summary must describe a gripping opening moment, danger, question or striking image from the first two minutes. It creates a question answered only later, but the summary must describe it naturally without writing a label for it
+  ${enableHook
+    ? 'The first chapter summary describes the opening hook naturally without writing a planning label for it'
+    : 'The first chapter summary describes a natural, contextual opening and must not add a teaser, curiosity loop, or forced hook'}
   The middle chapters develop the conflict with rising stakes
   The FINAL chapter fully resolves the central conflict and the character arcs. The story must NOT end on a cliffhanger or leave the main thread unresolved
 - If there is only ONE chapter, that chapter's summary must itself contain setup, development and resolution
@@ -387,6 +409,7 @@ export function buildChapterChunkPrompt(
     storyNotes?: string
     customStyle?: string
     customLanguage?: string
+    enableHook?: boolean
   }
 ): { system: string; user: string } {
   const stylePrompt = resolveStylePrompt(style, opts.customStyle)
@@ -396,6 +419,7 @@ export function buildChapterChunkPrompt(
   const isLastChunk = opts.isLastChunk ?? opts.chunkIndex === opts.totalChunks - 1
   const isFirstChapter = chapterIndex === 0
   const isLastChapter = chapterIndex === outline.chapters.length - 1
+  const enableHook = opts.enableHook !== false
 
   // Mạch truyện xuyên chương: các chương đã kể + chương sắp tới,
   // để mỗi khối biết mình đứng đâu trong tổng thể và không mâu thuẫn logic
@@ -411,7 +435,7 @@ export function buildChapterChunkPrompt(
   // Cửa sổ hook 2 phút đầu: khối nào còn nằm trong cửa sổ này phải viết để GIỮ CHÂN
   // người nghe — mở bằng khoảnh khắc gây tò mò, nêu rủi ro, treo câu hỏi chưa trả lời
   const hookBlock =
-    (opts.hookWindowChars ?? 0) > 0
+    enableHook && (opts.hookWindowChars ?? 0) > 0
       ? `
 AUDIENCE HOOK — this segment falls inside the story's FIRST TWO MINUTES of narration (~${opts.hookWindowChars} characters of that window remain). The first two minutes decide whether the listener stays or leaves — write them to HOLD attention:
 - The very first sentences must seize attention: open on a moment of tension, a striking image, a burning question, an unusual claim, or a decision with consequences — NEVER on weather, waking up, scenery, or calm daily routine
@@ -436,12 +460,19 @@ ${GENRE_COMMITMENT_RULES}
 
 ${SETTING_FIDELITY_RULES}
 
+${openingStrategyRules(enableHook)}
+
 ${NATIVE_VOICE_RULES}
 
 Chapter ${chapter.chapter}/${outline.chapters.length}: "${chapter.title}"
 Chapter plot: ${chapter.summary}
 Overall story arc: ${outline.outlineSummary}
 ${continuityBlock}${authorNotesBlock(opts.storyNotes)}${opts.userDirection?.trim() ? `\nAuthor's additional direction (must be respected):\n${opts.userDirection.trim()}\n` : ''}${hookBlock}
+OUTLINE FIDELITY:
+- Treat the chapter plot and overall story arc above as fixed facts, not loose inspiration
+- Preserve the stated occupations, locations, objects, relationships, era, and cause of conflict exactly
+- Do not substitute a different workplace, setting, profession, key object, or premise to fit the selected style
+
 SEGMENT RULES:
 - This is segment ${opts.chunkIndex + 1}/${opts.totalChunks} of the chapter
 - ${isLastChunk && isLastChapter
@@ -449,7 +480,9 @@ SEGMENT RULES:
     : `LENGTH BUDGET: write about ${opts.targetChars} characters. This is a hard ceiling — do NOT exceed ${Math.round(opts.targetChars * 1.15)} characters. Count characters, not words`}
 - ${isFirstChunk
     ? (isFirstChapter
-        ? 'OPEN THE STORY — start with a hook, then quickly establish WHO the main characters are, WHERE the story takes place, and WHY the central conflict begins. The listener must understand the cause of everything before the action escalates'
+        ? (enableHook
+            ? 'OPEN THE STORY — execute the audience hook, then quickly establish WHO the main characters are, WHERE the story takes place, and WHY the central conflict begins'
+            : 'OPEN THE STORY NATURALLY — establish WHO the main characters are, WHERE they are, and WHY the central conflict begins. Do not add a teaser, curiosity loop, cold open, immediate shock, or forced hook')
         : 'START the chapter — open straight into the scene')
     : 'CONTINUE seamlessly from where the previous segment ended'}
 - ${isLastChunk
@@ -486,7 +519,9 @@ PACING FOR SPOKEN DELIVERY — the listener needs room to breathe:
     user += `\n\nPrevious context (how the story reads just before this segment):\n${opts.previousContext.slice(-500)}`
   }
   if (isFirstChunk && isFirstChapter) {
-    user += '\n\nThis is the very first segment of the story. Start strong.'
+    user += enableHook
+      ? '\n\nThis is the very first segment of the story. Execute the opening hook immediately.'
+      : '\n\nThis is the very first segment of the story. Begin naturally with context and character, without an audience hook.'
   }
 
   return { system, user }
@@ -587,12 +622,13 @@ export function buildRewriteOutlinePrompt(
   existingOutlines: string[],
   customStyle?: string,
   customLanguage?: string,
-  storyNotes?: string
+  storyNotes?: string,
+  enableHook = true
 ): { system: string; user: string } {
   const stylePrompt = style === 'custom' ? customStyle || '' : STYLE_PROMPTS[style]
   const langPrompt = language === 'custom' ? customLanguage || '' : LANGUAGE_VOICES[language]
   const wordsTarget = duration * 200
-  const chaptersTarget = Math.max(1, Math.ceil(duration / 8))
+  const chaptersTarget = Math.min(30, Math.max(1, Math.ceil(duration / 8)))
 
   let antiDupSection = ''
   if (existingOutlines.length > 0) {
@@ -605,6 +641,8 @@ Writing style: ${stylePrompt}
 Target language voice: ${langPrompt}
 
 ${targetLanguageRules(language, customLanguage)}
+
+${openingStrategyRules(enableHook)}
 
 Return JSON without markdown:
 {
@@ -622,7 +660,9 @@ Rules:
 - Give the characters culturally appropriate target-language names and use a distinct setting when suitable
 - Each chapter has a clear dramatic purpose and its own conflict
 - The first chapter establishes characters, setting, and the cause of the conflict before escalation. Middle chapters develop it. The final chapter completely resolves the main conflict and character arcs without a cliffhanger
-- The first chapter summary describes a compelling moment, danger, or unanswered question from the first two minutes, but never prefixes it with a planning label
+- ${enableHook
+    ? 'The first chapter summary describes a compelling opening hook from the first two minutes, but never prefixes it with a planning label'
+    : 'The first chapter summary describes a natural contextual opening without a teaser, curiosity loop, immediate shock, or forced hook'}
 - Preserve the era and world implied by the source and selected direction. Do not invent future technology or expand one unusual element into an unrelated science-fiction world
 - Fulfill every genre, tone, trope, and intensity requirement from the source and selected direction through concrete events, not meta-analysis inside summaries
 - JSON string values contain only target-language story content; no Vietnamese or English planning labels${antiDupSection}

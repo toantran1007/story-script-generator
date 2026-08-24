@@ -29,6 +29,14 @@ const SPACELESS: Language[] = ['th', 'ja', 'zh']
 /** Giới hạn hợp lệ cho tốc độ đọc tự khai (ký tự/phút). */
 export const READING_SPEED_MIN = 100
 export const READING_SPEED_MAX = 5000
+export const DURATION_MIN = 5
+export const DURATION_MAX = 600
+
+export function normalizeDuration(minutes: number): number {
+  const rounded = Math.round(minutes)
+  if (!Number.isFinite(rounded)) return 30
+  return Math.min(DURATION_MAX, Math.max(DURATION_MIN, rounded))
+}
 
 /**
  * Tốc độ đọc hiệu lực: người dùng tự khai (override > 0) thì dùng số đó,

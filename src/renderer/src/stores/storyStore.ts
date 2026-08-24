@@ -32,7 +32,7 @@ import {
 } from '@/services/promptEngine'
 import { checkDuplicate } from '@/services/similarityCheck'
 import { stripNarrationMarkup } from '@/services/textCleanup'
-import { distributeCharBudget, targetCharsFor, hookCharsFor } from '@/services/textMetrics'
+import { distributeCharBudget, targetCharsFor, hookCharsFor, normalizeDuration } from '@/services/textMetrics'
 import { hasTargetLanguageLeak } from '@/services/languageGuard'
 
 // ===== Helpers =====
@@ -151,6 +151,7 @@ interface AppState {
   setIdea: (v: string) => void
   setStoryNotes: (v: string) => void
   setAutoFlow: (v: boolean) => void
+  setEnableHook: (v: boolean) => void
   setStyle: (v: StoryStyle) => void
   setCustomStyle: (v: string) => void
   setLanguage: (v: Language) => void
@@ -314,6 +315,7 @@ export const useAppStore = create<AppState>((set, get) => {
     alreadyWrittenChars?: number
     /** Cỡ cửa sổ hook 2 phút đầu (ký tự) — chỉ có tác dụng với chương 1 */
     hookChars?: number
+    enableHook?: boolean
     customStyle?: string
     customLanguage?: string
     startChunkIndex?: number
@@ -322,7 +324,7 @@ export const useAppStore = create<AppState>((set, get) => {
   }): Promise<{ text: string; lastSummary: string; charsWritten: number }> {
     const {
       pid, outline, chapterIndex, style, language, previousSummary,
-      targetChars, customStyle, customLanguage, userDirection, storyNotes
+      targetChars, customStyle, customLanguage, userDirection, storyNotes, enableHook
     } = args
     const startChunkIndex = args.startChunkIndex ?? 0
     const plannedChunks = Math.max(1, Math.ceil(targetChars / CHUNK_CHARS))
@@ -374,6 +376,7 @@ export const useAppStore = create<AppState>((set, get) => {
         totalChunks: displayTotal,
         targetChars: chunkTarget,
         isLastChunk,
+        enableHook,
         hookWindowChars,
         previousContext: memory || null,
         userDirection,
@@ -486,7 +489,12 @@ export const useAppStore = create<AppState>((set, get) => {
 
     // === Data loading ===
     loadProjects: async () => {
-      const projects = (await window.api.getProjects()) as Project[]
+      const storedProjects = (await window.api.getProjects()) as Project[]
+      const projects = storedProjects.map((project) => ({
+        ...project,
+        duration: normalizeDuration(project.duration),
+        enableHook: project.enableHook !== false
+      }))
       set({ projects })
     },
     loadSettings: async () => {
@@ -583,11 +591,12 @@ export const useAppStore = create<AppState>((set, get) => {
     setIdea: (v) => updateProject({ idea: v }),
     setStoryNotes: (v) => updateProject({ storyNotes: v }),
     setAutoFlow: (v) => updateProject({ autoFlow: v }),
+    setEnableHook: (v) => updateProject({ enableHook: v }),
     setStyle: (v) => updateProject({ style: v }),
     setCustomStyle: (v) => updateProject({ customStyle: v }),
     setLanguage: (v) => updateProject({ language: v }),
     setCustomLanguage: (v) => updateProject({ customLanguage: v }),
-    setDuration: (v) => updateProject({ duration: v }),
+    setDuration: (v) => updateProject({ duration: normalizeDuration(v) }),
     setReadingSpeed: (v) => updateProject({ readingSpeed: Math.max(0, Math.round(v) || 0) }),
     setMode: (v) => updateProject({ mode: v }),
     setStep: (step) => updateProject({ currentStep: step as 1 | 2 | 3 }),
@@ -635,7 +644,7 @@ export const useAppStore = create<AppState>((set, get) => {
       const pType = p?.projectType || 'new'
       updateProjectById(pid, {
         currentStep: 1, idea: '', storyNotes: '', style: 'dramatic', customStyle: '',
-        language: 'vi', customLanguage: '', duration: 30, readingSpeed: 0, mode: 'guided', autoFlow: false,
+        language: 'vi', customLanguage: '', duration: 30, enableHook: true, readingSpeed: 0, mode: 'guided', autoFlow: false,
         originalScript: '', scriptAnalysis: '', suggestedDirections: [], chosenDirection: '',
         questions: [], answers: {}, outlinePhase: 'idle', outline: null,
         viSummary: '', userDirection: '', generatedStory: '', outlineSummary: '',
@@ -785,7 +794,7 @@ export const useAppStore = create<AppState>((set, get) => {
           const { system: oS, user: oU } = buildRewriteOutlinePrompt(
             p.originalScript, p.scriptAnalysis, p.chosenDirection,
             p.style, p.language, p.duration, qaList, existingOutlines,
-            p.customStyle, p.customLanguage, p.storyNotes
+            p.customStyle, p.customLanguage, p.storyNotes, p.enableHook !== false
           )
           outlineResp = await chat(
             [{ role: 'system', content: oS }, { role: 'user', content: oU }],
@@ -795,7 +804,7 @@ export const useAppStore = create<AppState>((set, get) => {
         } else {
           const { system: oS, user: oU } = buildOutlinePrompt(
             p.idea, p.style, p.language, p.duration, qaList, existingOutlines,
-            p.customStyle, p.customLanguage, p.storyNotes
+            p.customStyle, p.customLanguage, p.storyNotes, p.enableHook !== false
           )
           outlineResp = await chat(
             [{ role: 'system', content: oS }, { role: 'user', content: oU }],
@@ -949,7 +958,8 @@ export const useAppStore = create<AppState>((set, get) => {
           const result = await writeChapterChunked({
             pid, outline, chapterIndex: i, style: p.style, language: p.language,
             previousSummary, targetChars: chapterBudgets[i],
-            hookChars: hookCharsFor(p.language, p.readingSpeed),
+            enableHook: p.enableHook !== false,
+            hookChars: p.enableHook !== false ? hookCharsFor(p.language, p.readingSpeed) : 0,
             customStyle: p.customStyle, customLanguage: p.customLanguage,
             userDirection: p.userDirection, storyNotes: p.storyNotes
           })
@@ -1073,7 +1083,8 @@ export const useAppStore = create<AppState>((set, get) => {
             pid, outline, chapterIndex: i, style: p.style, language: p.language,
             previousSummary, targetChars: chapterBudgets[i],
             alreadyWrittenChars: alreadyWritten,
-            hookChars: hookCharsFor(p.language, p.readingSpeed),
+            enableHook: p.enableHook !== false,
+            hookChars: p.enableHook !== false ? hookCharsFor(p.language, p.readingSpeed) : 0,
             customStyle: p.customStyle, customLanguage: p.customLanguage,
             startChunkIndex: chunkStart, userDirection: p.userDirection,
             storyNotes: p.storyNotes

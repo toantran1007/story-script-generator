@@ -548,44 +548,22 @@ body {
   color: var(--text-primary);
 }
 
-/* ===== Duration Slider ===== */
+/* ===== Duration Control ===== */
 .duration-control {
   display: flex;
   align-items: center;
   gap: 16px;
 }
 
-.duration-slider {
-  flex: 1;
-  -webkit-appearance: none;
-  height: 6px;
-  border-radius: 3px;
-  background: var(--border-light);
-  outline: none;
-}
-
-.duration-slider::-webkit-slider-thumb {
-  -webkit-appearance: none;
-  width: 20px;
-  height: 20px;
-  border-radius: 50%;
-  background: var(--accent);
-  cursor: pointer;
-  border: 3px solid var(--bg-primary);
-  box-shadow: 0 0 8px var(--accent-glow);
-  transition: transform var(--transition);
-}
-
-.duration-slider::-webkit-slider-thumb:hover {
-  transform: scale(1.15);
+.duration-input {
+  width: 160px;
 }
 
 .duration-value {
   font-size: 14px;
   font-weight: 600;
   color: var(--accent-light);
-  min-width: 80px;
-  text-align: right;
+  min-width: 90px;
   font-family: var(--font-mono);
 }
 

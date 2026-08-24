@@ -68,6 +68,8 @@ export interface Project {
   language: Language
   customLanguage: string
   duration: number
+  /** Bật hook giữ chân trong dàn ý và phần mở đầu. */
+  enableHook: boolean
   /** Tốc độ đọc tự khai (ký tự/phút). 0 = dùng mặc định theo ngôn ngữ. */
   readingSpeed: number
   mode: 'guided' | 'auto'
@@ -114,6 +116,7 @@ export function createEmptyProject(id: string, name: string, projectType: Projec
     language: 'vi',
     customLanguage: '',
     duration: 30,
+    enableHook: true,
     readingSpeed: 0,
     mode: 'guided',
     autoFlow: false,
