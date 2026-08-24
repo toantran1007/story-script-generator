@@ -22,11 +22,20 @@ function assert(condition, message) {
 const prompts = loadTypeScriptModule('src/renderer/src/services/promptEngine.ts')
 const metrics = loadTypeScriptModule('src/renderer/src/services/textMetrics.ts')
 const types = loadTypeScriptModule('src/renderer/src/types/index.ts')
+const wizardStep1 = fs.readFileSync('src/renderer/src/components/WizardStep1.tsx', 'utf8')
 
 assert(types.createEmptyProject('id', 'name').enableHook === true, 'new projects enable hooks')
 assert(metrics.normalizeDuration(0) === 5, 'duration clamps to the safe minimum')
 assert(metrics.normalizeDuration(37.4) === 37, 'duration accepts arbitrary whole minutes')
 assert(metrics.normalizeDuration(999) === 600, 'duration clamps to the safe maximum')
+assert(
+  wizardStep1.includes('onChange={(e) => setDurationInput(e.target.value)}'),
+  'duration input keeps the typed value local instead of normalizing every keystroke'
+)
+assert(
+  wizardStep1.includes('onBlur={commitDurationInput}'),
+  'duration input commits the normalized value when editing finishes'
+)
 
 const outlineArgs = ['A baker discovers a hidden room', 'dramatic', 'en', 17, [], []]
 const hookOutline = prompts.buildOutlinePrompt(...outlineArgs, '', '', '', true)

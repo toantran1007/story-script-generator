@@ -7,7 +7,8 @@ import {
   READING_SPEED_MIN,
   READING_SPEED_MAX,
   DURATION_MIN,
-  DURATION_MAX
+  DURATION_MAX,
+  normalizeDuration
 } from '@/services/textMetrics'
 import type { StoryStyle, Language } from '@/types'
 import { STYLE_LABELS, LANGUAGE_LABELS } from '@/types'
@@ -49,6 +50,14 @@ export function WizardStep1(): JSX.Element {
   }, [p?.id, p?.duration])
 
   if (!p) return <div />
+
+  const commitDurationInput = (): void => {
+    const normalized = durationInput.trim()
+      ? normalizeDuration(Number(durationInput))
+      : p.duration
+    setDuration(normalized)
+    setDurationInput(String(normalized))
+  }
 
   const isRewrite = p.projectType === 'rewrite'
 
@@ -274,14 +283,15 @@ export function WizardStep1(): JSX.Element {
             max={DURATION_MAX}
             step={1}
             value={durationInput}
-            onChange={(e) => {
-              const value = e.target.value
-              setDurationInput(value)
-              if (value !== '') setDuration(Number(value))
+            onChange={(e) => setDurationInput(e.target.value)}
+            onBlur={commitDurationInput}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.currentTarget.blur()
+              }
             }}
-            onBlur={() => setDurationInput(String(p.duration))}
           />
-          <span className="duration-value">{p.duration} phút</span>
+          <span className="duration-value">phút</span>
         </div>
         <div className="duration-estimate">
           {getLengthEstimate(p.duration, p.language, p.readingSpeed)} · {getChapterEstimate(p.duration)}
