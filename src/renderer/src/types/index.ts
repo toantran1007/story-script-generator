@@ -35,6 +35,39 @@ export interface Outline {
   outlineSummary: string
 }
 
+export type TransformationLevel = 'develop' | 'original' | 'reborn'
+
+export interface InspirationProfile {
+  sourceType: 'short-idea' | 'summary' | 'outline' | 'full-story'
+  essence: string[]
+  expansionOpportunities: string[]
+  requiredElements: string[]
+  forbiddenNames: string[]
+  forbiddenSettings: string[]
+  forbiddenObjects: string[]
+  forbiddenPlotBeats: string[]
+  forbiddenTwists: string[]
+  creativeBrief: string
+}
+
+export interface OriginalityReport {
+  passed: boolean
+  score: number
+  attempt: number
+  changedAxes: string[]
+  reusedFingerprints: string[]
+  similarPlotBeats: string[]
+  sameTwistOrEnding: boolean
+  feedback: string[]
+  /** Concrete violations that must block using the outline. */
+  hardViolations?: string[]
+  /** Broad thematic or structural similarities shown as warnings only. */
+  softSimilarities?: string[]
+  plotSimilarity?: number
+  /** Near-pass candidate that is safe enough to review with a warning. */
+  usableWithWarning?: boolean
+}
+
 // ===== Writing Memory (persisted) =====
 export interface WritingMemory {
   completedChapters: number      // Number of fully written chapters
@@ -61,6 +94,9 @@ export interface Project {
 
   // Step 1
   idea: string
+  transformationLevel: TransformationLevel
+  inspirationProfile: InspirationProfile | null
+  originalityReport: OriginalityReport | null
   /** Ghi chú / lưu ý của tác giả — AI phải tuân theo ở mọi bước (câu hỏi, dàn ý, viết) */
   storyNotes: string
   style: StoryStyle
@@ -110,6 +146,9 @@ export function createEmptyProject(id: string, name: string, projectType: Projec
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
     idea: '',
+    transformationLevel: 'original',
+    inspirationProfile: null,
+    originalityReport: null,
     storyNotes: '',
     style: 'dramatic',
     customStyle: '',
@@ -203,6 +242,33 @@ export const VILAO_API_PRESET = {
   model: 'cd/gpt-5.6-sol'
 } as const
 
+export function normalizeVilaoModelId(model?: string): string {
+  const value = (model || '').trim()
+  if (!value || value.includes('/')) return value
+  const aliases: Record<string, string> = {
+    'gemini-3.7-flash-high': 'anxs/gemini-3.7-flash-high',
+    'gpt-5.6-sol': 'cd/gpt-5.6-sol'
+  }
+  return aliases[value] || value
+}
+
+/** Recover persisted wizard snapshots left mid-generation after an app restart. */
+export function recoverStaleProject(project: Project): Project {
+  const hasStory = project.generatedStory.trim().length > 0
+  const hasOutline = Boolean(project.outline)
+  const staleOutlineState = project.currentStep === 3 && !hasOutline && !hasStory &&
+    (project.outlinePhase === 'idle' || project.outlinePhase === 'generating-outline' || project.status === 'outline')
+  if (!staleOutlineState) return project
+
+  const hasQuestions = project.questions.length > 0
+  return {
+    ...project,
+    currentStep: hasQuestions ? 2 : 1,
+    status: hasQuestions ? 'questions' : 'draft',
+    outlinePhase: 'idle'
+  }
+}
+
 export const LEGACY_API_PRESET = {
   apiBaseUrl: 'http://localhost:20128/v1',
   model: ''
@@ -262,7 +328,11 @@ export function normalizeSettings(input?: Partial<AppSettings>): AppSettings {
       apiBaseUrl: migrateLegacyApiBaseUrl(source.apiProfiles?.legacy?.apiBaseUrl) ??
         defaults.legacy.apiBaseUrl
     },
-    vilao: { ...defaults.vilao, ...source.apiProfiles?.vilao },
+    vilao: {
+      ...defaults.vilao,
+      ...source.apiProfiles?.vilao,
+      model: normalizeVilaoModelId(source.apiProfiles?.vilao?.model ?? defaults.vilao.model)
+    },
     custom: { ...defaults.custom, ...source.apiProfiles?.custom }
   }
 
@@ -270,7 +340,9 @@ export function normalizeSettings(input?: Partial<AppSettings>): AppSettings {
     profiles[provider] = {
       apiBaseUrl: sourceApiBaseUrl ?? profiles[provider].apiBaseUrl,
       apiKey: source.apiKey ?? profiles[provider].apiKey,
-      model: source.model ?? profiles[provider].model
+      model: provider === 'vilao'
+        ? normalizeVilaoModelId(source.model ?? profiles[provider].model)
+        : source.model ?? profiles[provider].model
     }
   }
 

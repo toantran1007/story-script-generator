@@ -28,6 +28,9 @@ const api = {
   testConnection: (settings?: unknown): Promise<unknown> =>
     ipcRenderer.invoke('api:test-connection', settings),
 
+  readTxtFile: (): Promise<{ name: string; content: string; bytes: number } | null> =>
+    ipcRenderer.invoke('file:read-txt'),
+
   // Project CRUD
   getProjects: (): Promise<unknown[]> => ipcRenderer.invoke('store:get-projects'),
   saveProject: (project: unknown): Promise<unknown[]> =>

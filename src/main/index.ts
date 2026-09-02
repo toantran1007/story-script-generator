@@ -2,8 +2,10 @@ import { app, shell, BrowserWindow, ipcMain, dialog } from 'electron'
 import { join } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import Store from 'electron-store'
+import { readFile } from 'fs/promises'
 import { writeFileSync } from 'fs'
 import { autoUpdater } from 'electron-updater'
+import { buildChatCompletionBody } from './modelResolver'
 
 interface ProjectRecord {
   id: string
@@ -33,6 +35,10 @@ interface ProjectRecord {
   outlineSummary: string
   writingMemory: unknown
 }
+
+const MAX_IMPORTED_TEXT_BYTES = 5 * 1024 * 1024
+// Keep imported prompts within a practical model context size.
+const MAX_IMPORTED_TEXT_CHARS = 120_000
 
 type ApiProviderId = 'legacy' | 'vilao' | 'custom'
 
@@ -226,12 +232,7 @@ ipcMain.handle('api:chat', async (_event, messages, options, requestId?: string)
   const settings = store.get('settings')
   const url = buildApiUrl(settings.apiBaseUrl, 'chat/completions')
 
-  const body: Record<string, unknown> = {
-    model: options?.model || settings.model,
-    messages,
-    temperature: options?.temperature ?? settings.temperature,
-    max_tokens: options?.maxTokens ?? settings.maxTokens
-  }
+  const body = buildChatCompletionBody(settings, messages, options)
 
   const controller = new AbortController()
   if (requestId) activeRequests.set(requestId, controller)
@@ -264,13 +265,7 @@ ipcMain.handle('api:chat-stream', async (event, messages, options, streamId?: st
   const settings = store.get('settings')
   const url = buildApiUrl(settings.apiBaseUrl, 'chat/completions')
 
-  const body: Record<string, unknown> = {
-    model: options?.model || settings.model,
-    messages,
-    temperature: options?.temperature ?? settings.temperature,
-    max_tokens: options?.maxTokens ?? settings.maxTokens,
-    stream: true
-  }
+  const body = buildChatCompletionBody(settings, messages, options, true)
 
   const controller = new AbortController()
   if (streamId) activeRequests.set(streamId, controller)
@@ -346,6 +341,44 @@ ipcMain.handle('store:save-project', (_event, project: ProjectRecord) => {
   }
   store.set('projects', projects)
   return projects
+})
+
+ipcMain.handle('file:read-txt', async () => {
+  const result = await dialog.showOpenDialog({
+    properties: ['openFile'],
+    filters: [{ name: 'Text files', extensions: ['txt'] }]
+  })
+  if (result.canceled || !result.filePaths[0]) return null
+
+  const filePath = result.filePaths[0]
+  if (!filePath.toLowerCase().endsWith('.txt')) {
+    throw new Error('Định dạng không hỗ trợ. Vui lòng chọn file .txt.')
+  }
+  const file = await readFile(filePath)
+  if (file.length > MAX_IMPORTED_TEXT_BYTES) {
+    throw new Error('File quá lớn. Vui lòng chọn file TXT nhỏ hơn 5 MB.')
+  }
+
+  let content: string
+  if (file[0] === 0xff && file[1] === 0xfe) {
+    content = file.subarray(2).toString('utf16le')
+  } else if (file[0] === 0xfe && file[1] === 0xff) {
+    const swapped = Buffer.from(file.subarray(2))
+    for (let i = 0; i + 1 < swapped.length; i += 2) {
+      const byte = swapped[i]
+      swapped[i] = swapped[i + 1]
+      swapped[i + 1] = byte
+    }
+    content = swapped.toString('utf16le')
+  } else {
+    content = file.toString('utf8').replace(/^\uFEFF/, '')
+  }
+  if (!content.trim()) throw new Error('File TXT không có nội dung.')
+  if (content.length > MAX_IMPORTED_TEXT_CHARS) {
+    throw new Error(`Nội dung file quá dài (${content.length.toLocaleString()} ký tự). Vui lòng dùng file không quá ${MAX_IMPORTED_TEXT_CHARS.toLocaleString()} ký tự.`)
+  }
+
+  return { name: filePath.split(/[\\/]/).pop() || 'script.txt', content, bytes: file.length }
 })
 
 ipcMain.handle('store:delete-project', (_event, id: string) => {

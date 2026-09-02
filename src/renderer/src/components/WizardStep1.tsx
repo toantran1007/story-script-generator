@@ -1,6 +1,7 @@
 import { useEffect, useState, type JSX } from 'react'
 import { useAppStore } from '@/stores/storyStore'
 import { StopButton } from '@/components/StopButton'
+import { LogPanel } from '@/components/LogPanel'
 import {
   targetCharsFor,
   charsPerMinute,
@@ -10,7 +11,7 @@ import {
   DURATION_MAX,
   normalizeDuration
 } from '@/services/textMetrics'
-import type { StoryStyle, Language } from '@/types'
+import type { StoryStyle, Language, TransformationLevel } from '@/types'
 import { STYLE_LABELS, LANGUAGE_LABELS } from '@/types'
 
 function getLengthEstimate(minutes: number, language: Language, readingSpeed?: number): string {
@@ -35,15 +36,16 @@ export function WizardStep1(): JSX.Element {
   const savedStyles = useAppStore((s) => s.savedStyles)
   const savedLanguages = useAppStore((s) => s.savedLanguages)
   const {
-    setIdea, setStoryNotes, setAutoFlow, setEnableHook, setStyle, setCustomStyle, setLanguage,
+    setIdea, setTransformationLevel, setStoryNotes, setAutoFlow, setEnableHook, setStyle, setCustomStyle, setLanguage,
     setCustomLanguage, setDuration, setReadingSpeed, setMode,
-    setOriginalScript,
-    generateQuestions, analyzeScript,
+    generateQuestions,
     clearError, setSettingsOpen,
     saveCustomStylePreset, deleteCustomStylePreset,
     saveCustomLanguagePreset, deleteCustomLanguagePreset
   } = useAppStore()
   const [durationInput, setDurationInput] = useState('30')
+  const [isImporting, setIsImporting] = useState(false)
+  const [importStatus, setImportStatus] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
 
   useEffect(() => {
     setDurationInput(String(p?.duration ?? 30))
@@ -59,23 +61,41 @@ export function WizardStep1(): JSX.Element {
     setDurationInput(String(normalized))
   }
 
-  const isRewrite = p.projectType === 'rewrite'
-
-  const canProceed = isRewrite
-    ? p.originalScript.trim().length > 0 && settings.apiKey.length > 0
-    : p.idea.trim().length > 0 && settings.apiKey.length > 0
+  const canProceed = p.idea.trim().length > 0 && settings.apiKey.length > 0
 
   const handleSubmit = (): void => {
     if (!canProceed) return
-    if (isRewrite) {
-      analyzeScript()
-    } else {
-      generateQuestions()
+    generateQuestions()
+  }
+
+  const handleImportTxt = async (): Promise<void> => {
+    setIsImporting(true)
+    setImportStatus(null)
+    try {
+      const file = await window.api.readTxtFile()
+      if (!file) return
+      setIdea(file.content)
+      setImportStatus({
+        type: 'success',
+        text: `Đã nạp ${file.name} · ${(file.bytes / 1024).toFixed(1)} KB · ${file.content.length.toLocaleString()} ký tự`
+      })
+    } catch (error) {
+      const message = String(error)
+        .replace(/^Error:\s*/, '')
+        .replace(/^Error invoking remote method 'file:read-txt':\s*/, '')
+      setImportStatus({ type: 'error', text: message })
+    } finally {
+      setIsImporting(false)
     }
   }
 
   const styles = Object.keys(STYLE_LABELS) as StoryStyle[]
   const languages = Object.keys(LANGUAGE_LABELS) as Language[]
+  const transformationLevels: { id: TransformationLevel; title: string; description: string }[] = [
+    { id: 'develop', title: 'Phát triển', description: 'Giữ tinh thần chính, mở rộng bằng nhân vật và tình huống mới' },
+    { id: 'original', title: 'Sáng tạo mới', description: 'Giữ điểm hấp dẫn trừu tượng, thay đổi sâu cốt truyện' },
+    { id: 'reborn', title: 'Tái sinh', description: 'Chỉ giữ thông điệp/cảm xúc, tái tạo gần như toàn bộ' }
+  ]
 
   return (
     <div className="wizard">
@@ -87,15 +107,8 @@ export function WizardStep1(): JSX.Element {
           <div className="wizard__step-line" />
           <div className="wizard__step-dot">3</div>
         </div>
-        <h1 className="wizard__title">
-          {isRewrite ? '🔄 Viết lại kịch bản' : '✨ Tạo truyện mới'}
-        </h1>
-        <p className="wizard__subtitle">
-          {isRewrite
-            ? 'Dán kịch bản gốc để AI phân tích và đề xuất hướng viết lại mới'
-            : 'Nhập ý tưởng và thiết lập thông số cho câu chuyện'
-          }
-        </p>
+        <h1 className="wizard__title">✨ Tạo truyện mới</h1>
+        <p className="wizard__subtitle">Nhập ý tưởng hoặc chọn file TXT và thiết lập thông số cho câu chuyện</p>
       </div>
 
       {runtime.error && (
@@ -114,36 +127,54 @@ export function WizardStep1(): JSX.Element {
         </div>
       )}
 
-      {/* === Content input: Idea (new) or Original Script (rewrite) === */}
-      {isRewrite ? (
-        <div className="form-group">
-          <label className="form-label">📄 Kịch bản gốc</label>
-          <textarea
-            className="form-textarea"
-            placeholder="Dán toàn bộ kịch bản/truyện gốc vào đây..."
-            value={p.originalScript}
-            onChange={(e) => setOriginalScript(e.target.value)}
-            rows={10}
-            style={{ minHeight: 200, fontFamily: 'var(--font-mono)', fontSize: 13 }}
-          />
-          <div className="form-hint">
-            {p.originalScript.trim()
-              ? `📊 ${p.originalScript.trim().split(/\s+/).filter(Boolean).length.toLocaleString()} từ · AI sẽ phân tích nội dung và đề xuất hướng viết lại`
-              : 'Hỗ trợ mọi ngôn ngữ. AI sẽ tự phát hiện ngôn ngữ gốc.'}
+      <div className="form-group">
+        <div className="content-input-header">
+          <label className="form-label">Ý tưởng / tóm tắt / dàn ý tham khảo</label>
+          <button
+            type="button"
+            className="btn btn--sm btn--secondary"
+            onClick={handleImportTxt}
+            disabled={isImporting || runtime.isLoadingQuestions}
+          >
+            {isImporting ? 'Đang đọc file...' : '📄 Chọn file TXT'}
+          </button>
+        </div>
+        <textarea
+          className="form-textarea"
+          placeholder="Mô tả ý tưởng hoặc chọn file TXT chứa nội dung kịch bản..."
+          value={p.idea}
+          onChange={(e) => {
+            setIdea(e.target.value)
+            setImportStatus(null)
+          }}
+          rows={8}
+          style={{ minHeight: 180 }}
+        />
+        {importStatus && (
+          <div className={`file-import-status file-import-status--${importStatus.type}`}>
+            {importStatus.text}
           </div>
+        )}
+        <div className="form-hint">Hỗ trợ file .txt tối đa 5 MB và 120.000 ký tự, mã hóa UTF-8 hoặc UTF-16.</div>
+      </div>
+
+      <div className="form-group">
+        <label className="form-label">Mức biến đổi để tạo truyện mới</label>
+        <div className="transformation-levels">
+          {transformationLevels.map((level) => (
+            <button
+              key={level.id}
+              type="button"
+              className={`transformation-level ${p.transformationLevel === level.id ? 'transformation-level--active' : ''}`}
+              onClick={() => setTransformationLevel(level.id)}
+            >
+              <strong>{level.title}</strong>
+              <span>{level.description}</span>
+            </button>
+          ))}
         </div>
-      ) : (
-        <div className="form-group">
-          <label className="form-label">Ý tưởng truyện</label>
-          <textarea
-            className="form-textarea"
-            placeholder="Mô tả ý tưởng câu chuyện... (VD: Một đầu bếp du hành thời gian phải nấu bữa ăn ngăn chiến tranh)"
-            value={p.idea}
-            onChange={(e) => setIdea(e.target.value)}
-            rows={4}
-          />
-        </div>
-      )}
+        <div className="form-hint">Tên nhân vật, địa điểm, đồ vật và chuỗi tình huống từ nguồn luôn bị cấm dùng lại.</div>
+      </div>
 
       {/* Ghi chú / lưu ý — AI tuân theo ở mọi bước */}
       <div className="form-group">
@@ -157,14 +188,14 @@ export function WizardStep1(): JSX.Element {
           rows={3}
         />
         <div className="form-hint">
-          AI sẽ tuân theo các lưu ý này ở mọi bước: đặt câu hỏi, xây dàn ý và khi viết truyện.
+          AI sẽ tuân theo các lưu ý này ở mọi bước. Muốn giữ chính xác tên hoặc địa điểm nào từ nguồn, hãy ghi rõ tại đây.
         </div>
       </div>
 
       <div className="row">
         <div className="form-group">
           <label className="form-label">
-            {isRewrite ? 'Phong cách viết lại' : 'Phong cách kể chuyện'}
+            Phong cách kể chuyện
           </label>
           <select
             className="form-select"
@@ -350,8 +381,7 @@ export function WizardStep1(): JSX.Element {
         </div>
       </div>
 
-      {!isRewrite && (
-        <div className="form-group">
+      <div className="form-group">
           <label className="form-label">Chế độ tạo truyện</label>
           <div className="mode-toggle">
             <button
@@ -367,8 +397,7 @@ export function WizardStep1(): JSX.Element {
               🤖 Tự động — AI tự quyết định mọi thứ
             </button>
           </div>
-        </div>
-      )}
+      </div>
 
       {/* Tự động xuyên suốt các bước */}
       <div className="form-group">
@@ -384,7 +413,7 @@ export function WizardStep1(): JSX.Element {
         </label>
         {p.autoFlow && (
           <div className="form-hint">
-            {!isRewrite && p.mode === 'auto'
+            {p.mode === 'auto'
               ? 'Toàn bộ quy trình sẽ tự chạy: câu hỏi → AI trả lời → dàn ý → viết truyện. Chỉ dừng nếu phát hiện trùng cốt truyện.'
               : 'Sau khi bạn hoàn thành bước hiện tại, dàn ý tạo xong sẽ viết ngay. Chỉ dừng nếu phát hiện trùng cốt truyện.'}
           </div>
@@ -400,14 +429,15 @@ export function WizardStep1(): JSX.Element {
           {runtime.isLoadingQuestions ? (
             <>
               <span className="story-output__spinner" />
-              {isRewrite ? 'Đang phân tích...' : 'Đang xử lý...'}
+              Đang xử lý...
             </>
           ) : (
-            isRewrite ? 'Phân tích kịch bản →' : 'Tạo truyện →'
+            'Tạo truyện →'
           )}
         </button>
         <StopButton full />
       </div>
+      <LogPanel logs={runtime.logs} />
     </div>
   )
 }

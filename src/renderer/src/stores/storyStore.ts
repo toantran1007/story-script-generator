@@ -2,16 +2,18 @@ import { create } from 'zustand'
 import { v4 as uuidv4 } from 'uuid'
 import type {
   Project,
-  ProjectType,
   StoryStyle,
   Language,
   AppSettings,
   ChatMessage,
   Outline,
   OutlinePhase,
-  DuplicateResult
+  DuplicateResult,
+  InspirationProfile,
+  OriginalityReport,
+  TransformationLevel
 } from '@/types'
-import { DEFAULT_SETTINGS, createEmptyProject, normalizeSettings } from '@/types'
+import { DEFAULT_SETTINGS, createEmptyProject, normalizeSettings, recoverStaleProject } from '@/types'
 import {
   chat,
   chatStream,
@@ -25,12 +27,15 @@ import {
   buildAutoAnswerPrompt,
   buildOutlinePrompt,
   buildChapterChunkPrompt,
-  buildViSummaryPrompt,
-  buildScriptAnalysisPrompt,
-  buildRewriteOutlinePrompt,
-  buildLanguageRepairPrompt
+  buildLanguageRepairPrompt,
+  buildInspirationProfilePrompt,
+  buildOriginalityAuditPrompt,
+  normalizeOriginalityReport,
+  getStrongerTransformationLevel,
+  originalityCandidateRank
 } from '@/services/promptEngine'
 import { checkDuplicate } from '@/services/similarityCheck'
+import { findForbiddenFingerprints } from '@/services/originalityCheck'
 import { stripNarrationMarkup } from '@/services/textCleanup'
 import { distributeCharBudget, targetCharsFor, hookCharsFor, normalizeDuration } from '@/services/textMetrics'
 import { hasTargetLanguageLeak } from '@/services/languageGuard'
@@ -60,6 +65,48 @@ function safeParseJSON<T>(text: string): T | null {
   return null
 }
 
+function strings(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : []
+}
+
+function parseInspirationProfile(text: string): InspirationProfile | null {
+  const value = safeParseJSON<Partial<InspirationProfile>>(text)
+  if (!value || typeof value.creativeBrief !== 'string' || !value.creativeBrief.trim()) return null
+  const sourceTypes = ['short-idea', 'summary', 'outline', 'full-story'] as const
+  return {
+    sourceType: sourceTypes.includes(value.sourceType as typeof sourceTypes[number])
+      ? value.sourceType as InspirationProfile['sourceType']
+      : 'short-idea',
+    essence: strings(value.essence),
+    expansionOpportunities: strings(value.expansionOpportunities),
+    requiredElements: strings(value.requiredElements),
+    forbiddenNames: strings(value.forbiddenNames),
+    forbiddenSettings: strings(value.forbiddenSettings),
+    forbiddenObjects: strings(value.forbiddenObjects),
+    forbiddenPlotBeats: strings(value.forbiddenPlotBeats),
+    forbiddenTwists: strings(value.forbiddenTwists),
+    creativeBrief: value.creativeBrief.trim()
+  }
+}
+
+function parseOriginalityReport(text: string, attempt: number): OriginalityReport | null {
+  const value = safeParseJSON<Partial<OriginalityReport>>(text)
+  if (!value || typeof value.passed !== 'boolean' || typeof value.score !== 'number') return null
+  return {
+    passed: value.passed,
+    score: value.score,
+    attempt,
+    changedAxes: strings(value.changedAxes),
+    reusedFingerprints: strings(value.reusedFingerprints),
+    similarPlotBeats: strings(value.similarPlotBeats),
+    sameTwistOrEnding: value.sameTwistOrEnding === true,
+    feedback: strings(value.feedback),
+    hardViolations: strings(value.hardViolations),
+    softSimilarities: strings(value.softSimilarities),
+    plotSimilarity: typeof value.plotSimilarity === 'number' ? value.plotSimilarity : undefined
+  }
+}
+
 function outlineLanguageText(outline: Outline): string {
   return [
     outline.title,
@@ -77,6 +124,7 @@ export interface LogEntry {
   time: string
   level: 'info' | 'warn' | 'error' | 'success'
   message: string
+  detail?: string
 }
 
 // ===== Runtime state per open tab (not persisted) =====
@@ -94,7 +142,7 @@ export interface WizardRuntime {
   lastFailedChunk: number
   writtenChapters: number
   totalChapters: number
-  lastAction: 'analyzeScript' | 'generateQuestions' | 'generateOutline' | 'confirmAndWrite' | null
+  lastAction: 'generateQuestions' | 'generateOutline' | 'confirmAndWrite' | null
 }
 
 function defaultRuntime(): WizardRuntime {
@@ -140,7 +188,7 @@ interface AppState {
   saveSettings: (s: AppSettings) => Promise<void>
 
   // Project CRUD
-  createProject: (name: string, projectType?: ProjectType) => Promise<void>
+  createProject: (name: string) => Promise<void>
   openProject: (id: string) => void
   closeTab: (id: string) => void
   switchTab: (id: string) => void
@@ -149,6 +197,7 @@ interface AppState {
 
   // Active project field setters
   setIdea: (v: string) => void
+  setTransformationLevel: (v: TransformationLevel) => void
   setStoryNotes: (v: string) => void
   setAutoFlow: (v: boolean) => void
   setEnableHook: (v: boolean) => void
@@ -166,11 +215,11 @@ interface AppState {
   setChosenDirection: (v: string) => void
 
   // Async generation
-  analyzeScript: () => Promise<void>
   generateQuestions: () => Promise<void>
   /** forPid: chuỗi auto truyền PID của dự án khởi chạy — không truyền thì lấy tab đang mở */
   generateOutline: (forPid?: string) => Promise<void>
   regenerateOutline: () => Promise<void>
+  retryOutlineStronger: () => Promise<void>
   confirmAndWrite: (forPid?: string) => Promise<void>
   continueWriting: () => Promise<void>
   stopGeneration: () => void
@@ -194,6 +243,7 @@ interface AppState {
 
 // ===== Auto-save debounce =====
 let autoSaveTimer: ReturnType<typeof setTimeout> | null = null
+const MAX_SOURCE_CHARS = 120_000
 // Track which projects have unsaved in-memory changes
 const dirtyProjects = new Set<string>()
 
@@ -225,6 +275,7 @@ function flushDirtyProjects(): void {
 const CHUNK_CHARS = 2000
 // Khối kết cần đủ đất diễn để không cụt ngủn, kể cả khi hạn mức đã cạn
 const CONCLUSION_MIN_CHARS = 1000
+const ABSOLUTE_MIN_CHUNK_CHARS = 200
 
 // ===== Create store =====
 export const useAppStore = create<AppState>((set, get) => {
@@ -273,11 +324,29 @@ export const useAppStore = create<AppState>((set, get) => {
     markDirty(id)
   }
 
-  function addLog(pid: string, level: LogEntry['level'], message: string): void {
+  function addLog(pid: string, level: LogEntry['level'], message: string, detail?: string): void {
     const { runtimes } = get()
     const rt = runtimes[pid] || defaultRuntime()
-    const entry: LogEntry = { time: ts(), level, message }
+    const entry: LogEntry = { time: ts(), level, message, detail }
     updateRuntimeFor(pid, { logs: [...rt.logs, entry] })
+  }
+
+  function errorDetail(err: unknown): string {
+    const raw = err instanceof Error ? `${err.name}: ${err.message}` : String(err)
+    const apiError = err as { technicalDetail?: string; attempts?: number }
+    const sanitized = raw
+      .replace(/Bearer\s+[A-Za-z0-9._-]+/gi, 'Bearer [REDACTED]')
+      .replace(/(api[_-]?key|authorization)\s*[:=]\s*[^\s,;]+/gi, '$1=[REDACTED]')
+      .replace(/\s+/g, ' ')
+      .trim()
+    const settings = get().settings
+    const endpoint = settings.apiBaseUrl || '(chưa cấu hình)'
+    const model = settings.model || '(mặc định nhà cung cấp)'
+    const attempts = apiError.attempts ? ` · Số lần gọi: ${apiError.attempts}` : ''
+    const technical = apiError.technicalDetail && apiError.technicalDetail !== sanitized
+      ? apiError.technicalDetail
+      : sanitized
+    return `Nhà cung cấp: ${settings.apiProvider} · Model: ${model} · Endpoint: ${endpoint}${attempts} · Chi tiết: ${technical.slice(0, 700)}`
   }
 
   function getProjectById(id: string): Project | null {
@@ -291,8 +360,9 @@ export const useAppStore = create<AppState>((set, get) => {
       updateRuntimeFor(pid, { error: null, generationProgress: 'Đã dừng' })
       return
     }
-    addLog(pid, 'error', `${prefix}: ${err}`)
-    updateRuntimeFor(pid, { error: `${prefix}: ${err}` })
+    const detail = errorDetail(err)
+    addLog(pid, 'error', prefix, detail)
+    updateRuntimeFor(pid, { error: `${prefix}: ${err instanceof Error ? err.message : String(err)}` })
   }
 
   // Chuẩn bị chạy một tác vụ mới cho dự án: xoá cờ huỷ còn sót lại từ lần trước
@@ -352,8 +422,12 @@ export const useAppStore = create<AppState>((set, get) => {
       // viết vượt và hạn mức thực tế đã cạn. Hạn mức là MỤC TIÊU độ dài,
       // không phải lưỡi dao cắt ngang mạch truyện: chương nào cũng phải được kết.
       const isLastChunk = remainingChars <= CHUNK_CHARS || chunk === maxChunk - 1
+      const conclusionFloor = Math.min(
+        CONCLUSION_MIN_CHARS,
+        Math.max(ABSOLUTE_MIN_CHUNK_CHARS, targetChars)
+      )
       const chunkTarget = isLastChunk
-        ? Math.min(CHUNK_CHARS, Math.max(CONCLUSION_MIN_CHARS, remainingChars))
+        ? Math.min(CHUNK_CHARS, Math.max(conclusionFloor, remainingChars))
         : CHUNK_CHARS
       const displayTotal = Math.max(plannedChunks, chunk + 1)
       // Khối này còn nằm trong cửa sổ hook 2 phút đầu không (chỉ chương 1;
@@ -449,10 +523,15 @@ export const useAppStore = create<AppState>((set, get) => {
           })
         }
 
-        addLog(pid, 'success', `Khối ${chunk + 1} hoàn thành (${cleanChunk.length} ký tự — chương: ${written.toLocaleString()}/${targetChars.toLocaleString()})`)
+        addLog(
+          pid,
+          'success',
+          `Khối ${chunk + 1} hoàn thành (${cleanChunk.length} ký tự — chương: ${written.toLocaleString()}/${targetChars.toLocaleString()})`,
+          `Chương ${chapterIndex + 1} · Còn khoảng ${Math.max(0, targetChars - written).toLocaleString()} ký tự`
+        )
       } catch (err) {
         if (!(err instanceof CancelledError)) {
-          addLog(pid, 'error', `Lỗi khối ${chunk + 1}: ${err}`)
+          addLog(pid, 'error', `Lỗi khối ${chunk + 1}`, errorDetail(err))
         }
         updateRuntimeFor(pid, { lastFailedChapter: chapterIndex, lastFailedChunk: chunk })
         throw err
@@ -490,11 +569,32 @@ export const useAppStore = create<AppState>((set, get) => {
     // === Data loading ===
     loadProjects: async () => {
       const storedProjects = (await window.api.getProjects()) as Project[]
-      const projects = storedProjects.map((project) => ({
-        ...project,
-        duration: normalizeDuration(project.duration),
-        enableHook: project.enableHook !== false
-      }))
+      const projects = storedProjects.map((project) => {
+        const wasRewrite = project.projectType === 'rewrite'
+        const migrateToInput = wasRewrite && project.currentStep < 3
+        const migratedIdea = project.idea?.trim() ? project.idea : project.originalScript || ''
+        return recoverStaleProject({
+          ...project,
+          projectType: 'new' as const,
+          idea: migratedIdea,
+          transformationLevel: project.transformationLevel || 'original' as const,
+          inspirationProfile: project.inspirationProfile || null,
+          originalityReport: project.originalityReport || null,
+          currentStep: migrateToInput ? 1 : project.currentStep,
+          status: migrateToInput ? 'draft' as const : project.status,
+          duration: normalizeDuration(project.duration),
+          enableHook: project.enableHook !== false
+        })
+      })
+      const recovered = projects.filter((project, index) => {
+        const original = storedProjects[index]
+        return project.currentStep !== original.currentStep ||
+          project.status !== original.status ||
+          project.outlinePhase !== original.outlinePhase
+      })
+      if (recovered.length > 0) {
+        await Promise.all(recovered.map((project) => window.api.saveProject(project)))
+      }
       set({ projects })
     },
     loadSettings: async () => {
@@ -510,9 +610,9 @@ export const useAppStore = create<AppState>((set, get) => {
     },
 
     // === Project CRUD ===
-    createProject: async (name, projectType = 'new') => {
+    createProject: async (name) => {
       const id = uuidv4()
-      const project = createEmptyProject(id, name, projectType)
+      const project = createEmptyProject(id, name, 'new')
 
       // CRITICAL: Flush ALL dirty in-memory projects to disk BEFORE creating new one
       if (autoSaveTimer) { clearTimeout(autoSaveTimer); autoSaveTimer = null }
@@ -588,7 +688,15 @@ export const useAppStore = create<AppState>((set, get) => {
     goToDashboard: () => set({ currentView: 'dashboard' }),
 
     // === Field setters ===
-    setIdea: (v) => updateProject({ idea: v }),
+    setIdea: (v) => updateProject({
+      idea: v,
+      inspirationProfile: null,
+      originalityReport: null
+    }),
+    setTransformationLevel: (v) => updateProject({
+      transformationLevel: v,
+      originalityReport: null
+    }),
     setStoryNotes: (v) => updateProject({ storyNotes: v }),
     setAutoFlow: (v) => updateProject({ autoFlow: v }),
     setEnableHook: (v) => updateProject({ enableHook: v }),
@@ -641,60 +749,17 @@ export const useAppStore = create<AppState>((set, get) => {
       const pid = get().activeProjectId
       if (!pid) return
       const p = getProjectById(pid)
-      const pType = p?.projectType || 'new'
       updateProjectById(pid, {
-        currentStep: 1, idea: '', storyNotes: '', style: 'dramatic', customStyle: '',
+        currentStep: 1, idea: '', transformationLevel: 'original',
+        inspirationProfile: null, originalityReport: null,
+        storyNotes: '', style: 'dramatic', customStyle: '',
         language: 'vi', customLanguage: '', duration: 30, enableHook: true, readingSpeed: 0, mode: 'guided', autoFlow: false,
         originalScript: '', scriptAnalysis: '', suggestedDirections: [], chosenDirection: '',
         questions: [], answers: {}, outlinePhase: 'idle', outline: null,
         viSummary: '', userDirection: '', generatedStory: '', outlineSummary: '',
-        status: 'draft', projectType: pType
+        status: 'draft', projectType: 'new'
       })
       updateRuntimeFor(pid, defaultRuntime())
-    },
-
-    // ===== Generation (all use pid-scoped updates) =====
-    analyzeScript: async () => {
-      const pid = get().activeProjectId
-      if (!pid) return
-      const p = getProjectById(pid)
-      if (!p || !p.originalScript.trim()) return
-
-      beginTask(pid)
-      updateRuntimeFor(pid, { isLoadingQuestions: true, error: null, generationProgress: 'Đang phân tích kịch bản gốc...', lastAction: 'analyzeScript', logs: [] })
-      updateProjectById(pid, { scriptAnalysis: '', suggestedDirections: [], chosenDirection: '' })
-      addLog(pid, 'info', 'Bắt đầu phân tích kịch bản gốc...')
-
-      try {
-        const { system, user } = buildScriptAnalysisPrompt(
-          p.originalScript, p.style, p.language, p.customStyle, p.customLanguage
-        )
-        addLog(pid, 'info', `Gửi ${p.originalScript.length.toLocaleString()} ký tự đến AI`)
-        const response = await chat(
-          [
-            { role: 'system', content: system },
-            { role: 'user', content: user }
-          ],
-          undefined,
-          pid
-        )
-        const parsed = safeParseJSON<{ analysis: string; directions: string[] }>(response)
-        if (!parsed || !parsed.analysis || !parsed.directions) {
-          throw new Error('Không thể phân tích kịch bản — JSON không hợp lệ')
-        }
-        updateProjectById(pid, {
-          scriptAnalysis: parsed.analysis,
-          suggestedDirections: parsed.directions,
-          currentStep: 2,
-          status: 'questions'
-        })
-        addLog(pid, 'success', `Phân tích hoàn thành — ${parsed.directions.length} hướng đề xuất`)
-      } catch (err) {
-        reportFailure(pid, err, 'Phân tích kịch bản thất bại')
-      } finally {
-        clearCancel(pid)
-        updateRuntimeFor(pid, { isLoadingQuestions: false, isCancelling: false, generationProgress: '' })
-      }
     },
 
     generateQuestions: async () => {
@@ -703,14 +768,52 @@ export const useAppStore = create<AppState>((set, get) => {
       const p = getProjectById(pid)
       if (!p) return
 
+      if (p.idea.length > MAX_SOURCE_CHARS) {
+        updateRuntimeFor(pid, {
+          error: `Nội dung quá dài (${p.idea.length.toLocaleString()} ký tự). Vui lòng rút gọn còn tối đa ${MAX_SOURCE_CHARS.toLocaleString()} ký tự.`,
+          lastAction: null
+        })
+        return
+      }
+
       beginTask(pid)
       updateRuntimeFor(pid, { isLoadingQuestions: true, error: null, lastAction: 'generateQuestions', logs: [], generationProgress: 'Đang tạo câu hỏi...' })
       updateProjectById(pid, { questions: [], answers: {} })
-      addLog(pid, 'info', 'Bắt đầu tạo câu hỏi...')
+      addLog(
+        pid,
+        'info',
+        'Bắt đầu tạo câu hỏi...',
+        `Nguồn: ${p.idea.length.toLocaleString()} ký tự · Provider: ${get().settings.apiProvider} · Model: ${get().settings.model || '(mặc định)'}`
+      )
 
       try {
+        let inspirationProfile = p.inspirationProfile
+        if (!inspirationProfile) {
+          updateRuntimeFor(pid, { generationProgress: 'Đang chắt lọc điểm đặc sắc từ nguồn...' })
+          addLog(pid, 'info', 'Phân tích nguồn tham khảo thành hồ sơ cảm hứng trừu tượng...')
+          const profilePrompt = buildInspirationProfilePrompt(p.idea, p.storyNotes)
+          const profileResp = await chat(
+            [
+              { role: 'system', content: profilePrompt.system },
+              { role: 'user', content: profilePrompt.user }
+            ],
+            { temperature: 0.2 },
+            pid
+          )
+          inspirationProfile = parseInspirationProfile(profileResp)
+          if (!inspirationProfile) throw new Error('Không thể tạo hồ sơ cảm hứng từ nội dung nguồn')
+          updateProjectById(pid, { inspirationProfile })
+          addLog(
+            pid,
+            'success',
+            `Đã chắt lọc ${inspirationProfile.essence.length} điểm đặc sắc và ${inspirationProfile.forbiddenNames.length} tên bị cấm`,
+            `Loại nguồn: ${inspirationProfile.sourceType} · Bối cảnh cấm: ${inspirationProfile.forbiddenSettings.length} · Đồ vật cấm: ${inspirationProfile.forbiddenObjects.length} · Tình huống cấm: ${inspirationProfile.forbiddenPlotBeats.length}`
+          )
+        }
+
+        updateRuntimeFor(pid, { generationProgress: 'Đang tạo câu hỏi cho câu chuyện mới...' })
         const { system, user } = buildQuestionsPrompt(
-          p.idea, p.style, p.language, p.duration, p.customStyle, p.customLanguage, p.storyNotes
+          p.idea, p.style, p.language, p.duration, p.customStyle, p.customLanguage, p.storyNotes, inspirationProfile
         )
         const response = await chat(
           [
@@ -724,13 +827,13 @@ export const useAppStore = create<AppState>((set, get) => {
         if (!parsed || !Array.isArray(parsed)) throw new Error('Không thể phân tích câu hỏi')
 
         updateProjectById(pid, { questions: parsed, currentStep: 2, status: 'questions' })
-        addLog(pid, 'success', `Tạo ${parsed.length} câu hỏi thành công`)
+        addLog(pid, 'success', `Tạo ${parsed.length} câu hỏi thành công`, `Chế độ: ${p.mode} · Ngôn ngữ đầu ra: ${p.language}`)
 
         if (p.mode === 'auto') {
           updateRuntimeFor(pid, { generationProgress: 'AI đang trả lời câu hỏi...' })
           addLog(pid, 'info', 'Chế độ tự động — AI đang trả lời câu hỏi...')
           const { system: aS, user: aU } = buildAutoAnswerPrompt(
-            p.idea, parsed, p.style, p.language, p.customStyle, p.customLanguage, p.storyNotes
+            p.idea, parsed, p.style, p.language, p.customStyle, p.customLanguage, p.storyNotes, inspirationProfile
           )
           const aResp = await chat(
             [{ role: 'system', content: aS }, { role: 'user', content: aU }],
@@ -787,58 +890,119 @@ export const useAppStore = create<AppState>((set, get) => {
           .filter((x) => x.id !== pid && x.outlineSummary)
           .map((x) => x.outlineSummary)
 
-        let outlineResp: string
+        const profile = p.inspirationProfile
+        if (!profile) throw new Error('Chưa có hồ sơ cảm hứng. Vui lòng quay lại bước 1 và tạo lại.')
 
-        if (p.projectType === 'rewrite' && p.originalScript) {
-          addLog(pid, 'info', 'Chế độ viết lại — sử dụng kịch bản gốc làm cơ sở')
-          const { system: oS, user: oU } = buildRewriteOutlinePrompt(
-            p.originalScript, p.scriptAnalysis, p.chosenDirection,
-            p.style, p.language, p.duration, qaList, existingOutlines,
-            p.customStyle, p.customLanguage, p.storyNotes, p.enableHook !== false
+        let outline: Outline | null = null
+        let originalityReport: OriginalityReport | null = null
+        let bestOutline: Outline | null = null
+        let bestReport: OriginalityReport | null = null
+        let originalityFeedback: string[] = []
+        const transformationLevel = p.transformationLevel || 'original'
+
+        for (let attempt = 1; attempt <= 3; attempt++) {
+          updateRuntimeFor(pid, {
+            generationProgress: `Đang tạo cấu trúc mới và kiểm tra độ độc lập — lần ${attempt}/3...`
+          })
+          addLog(
+            pid,
+            'info',
+            `Tạo dàn ý độc lập lần ${attempt}/3`,
+            `Mức biến đổi: ${transformationLevel} · Q&A: ${qaList.length} · Dàn ý cũ dùng để tránh trùng: ${existingOutlines.length}`
           )
-          outlineResp = await chat(
-            [{ role: 'system', content: oS }, { role: 'user', content: oU }],
-            { temperature: 0.4 },
-            pid
-          )
-        } else {
-          const { system: oS, user: oU } = buildOutlinePrompt(
+
+          const outlinePrompt = buildOutlinePrompt(
             p.idea, p.style, p.language, p.duration, qaList, existingOutlines,
-            p.customStyle, p.customLanguage, p.storyNotes, p.enableHook !== false
+            p.customStyle, p.customLanguage, p.storyNotes, p.enableHook !== false,
+            profile, transformationLevel, originalityFeedback
           )
-          outlineResp = await chat(
-            [{ role: 'system', content: oS }, { role: 'user', content: oU }],
+          const outlineResp = await chat(
+            [{ role: 'system', content: outlinePrompt.system }, { role: 'user', content: outlinePrompt.user }],
             { temperature: 0.4 },
             pid
+          )
+
+          let candidate = safeParseJSON<Outline>(outlineResp)
+          if (!candidate || !candidate.chapters || !candidate.title) throw new Error('Không thể phân tích outline')
+
+          if (hasTargetLanguageLeak(outlineLanguageText(candidate), p.language, p.customLanguage)) {
+            addLog(pid, 'warn', 'Phát hiện dàn ý bị lẫn ngôn ngữ — đang tự sửa trước khi kiểm tra')
+            updateRuntimeFor(pid, { generationProgress: 'Đang sửa ngôn ngữ dàn ý...' })
+            const repair = buildLanguageRepairPrompt(JSON.stringify(candidate), p.language, p.customLanguage, 'outline-json')
+            const repairedResp = await chat(
+              [{ role: 'system', content: repair.system }, { role: 'user', content: repair.user }],
+              { temperature: 0.2 },
+              pid
+            )
+            const repairedOutline = safeParseJSON<Outline>(repairedResp)
+            if (!repairedOutline || !repairedOutline.chapters || !repairedOutline.title) {
+              throw new Error('Không thể phân tích dàn ý sau khi sửa ngôn ngữ')
+            }
+            if (hasTargetLanguageLeak(outlineLanguageText(repairedOutline), p.language, p.customLanguage)) {
+              throw new Error('Dàn ý vẫn bị lẫn ngôn ngữ sau khi tự sửa')
+            }
+            candidate = repairedOutline
+            addLog(pid, 'success', 'Đã sửa ngôn ngữ dàn ý')
+          }
+
+          const auditPrompt = buildOriginalityAuditPrompt(candidate, profile, transformationLevel, attempt)
+          const auditResp = await chat(
+            [{ role: 'system', content: auditPrompt.system }, { role: 'user', content: auditPrompt.user }],
+            { temperature: 0.1 },
+            pid
+          )
+          const audit = parseOriginalityReport(auditResp, attempt)
+          if (!audit) throw new Error('Bộ kiểm tra độ độc lập trả về dữ liệu không hợp lệ')
+          const report = normalizeOriginalityReport(audit, transformationLevel, findForbiddenFingerprints(candidate, profile))
+          updateProjectById(pid, { originalityReport: report })
+          if (!bestReport || originalityCandidateRank(report) > originalityCandidateRank(bestReport)) {
+            bestReport = report
+            bestOutline = candidate
+          }
+          if (report.passed) {
+            outline = candidate
+            originalityReport = report
+            addLog(
+              pid,
+              'success',
+              `Dàn ý đạt kiểm định độc lập (${report.score}/100, ${report.changedAxes.length}/10 trục thay đổi)`,
+              `Lần kiểm tra: ${attempt}/3 · Không phát hiện dấu vân tay bị dùng lại`
+            )
+            break
+          }
+
+          originalityFeedback = report.feedback.length
+            ? report.feedback
+            : [...report.reusedFingerprints, ...report.similarPlotBeats]
+          if (attempt === 2) {
+            originalityFeedback = [
+              'FINAL ATTEMPT: keep the independent parts that already passed, but surgically replace every concrete violation and similar event chain listed below.',
+              ...(report.hardViolations || []),
+              ...originalityFeedback
+            ]
+          }
+          addLog(
+            pid,
+            'warn',
+            `Dàn ý chưa đủ khác biệt (${report.score}/100) — sẽ tạo lại`,
+            `Trục đã đổi: ${report.changedAxes.length} · Dấu vân tay: ${report.reusedFingerprints.join(' | ') || '(không rõ)'} · Nhịp sự kiện: ${report.similarPlotBeats.join(' | ') || '(không rõ)'} · Gợi ý: ${report.feedback.join(' | ') || '(không có)'}`
           )
         }
 
-        let outline = safeParseJSON<Outline>(outlineResp)
-        if (!outline || !outline.chapters || !outline.title) throw new Error('Không thể phân tích outline')
+        if (!outline && bestOutline && bestReport?.usableWithWarning) {
+          outline = bestOutline
+          originalityReport = bestReport
+          updateProjectById(pid, { outline: bestOutline, originalityReport: bestReport })
+          addLog(
+            pid,
+            'warn',
+            `Dàn ý dùng bản tốt nhất với cảnh báo (${bestReport.score}/100)`,
+            `Còn ${bestReport.softSimilarities?.length || bestReport.similarPlotBeats.length} điểm tương đồng chung; không có vi phạm cụ thể.`
+          )
+        }
 
-        if (hasTargetLanguageLeak(outlineLanguageText(outline), p.language, p.customLanguage)) {
-          addLog(pid, 'warn', 'Phát hiện dàn ý bị lẫn ngôn ngữ — đang tự sửa trước khi viết')
-          updateRuntimeFor(pid, { generationProgress: 'Đang sửa ngôn ngữ dàn ý...' })
-          const repair = buildLanguageRepairPrompt(
-            JSON.stringify(outline),
-            p.language,
-            p.customLanguage,
-            'outline-json'
-          )
-          const repairedResp = await chat(
-            [{ role: 'system', content: repair.system }, { role: 'user', content: repair.user }],
-            { temperature: 0.2 },
-            pid
-          )
-          const repairedOutline = safeParseJSON<Outline>(repairedResp)
-          if (!repairedOutline || !repairedOutline.chapters || !repairedOutline.title) {
-            throw new Error('Không thể phân tích dàn ý sau khi sửa ngôn ngữ')
-          }
-          if (hasTargetLanguageLeak(outlineLanguageText(repairedOutline), p.language, p.customLanguage)) {
-            throw new Error('Dàn ý vẫn bị lẫn ngôn ngữ sau khi tự sửa')
-          }
-          outline = repairedOutline
-          addLog(pid, 'success', 'Đã sửa ngôn ngữ dàn ý')
+        if (!outline || (!originalityReport?.passed && !originalityReport?.usableWithWarning)) {
+          throw new Error('Dàn ý không đạt kiểm định độc lập sau 3 lần. Vui lòng tăng mức biến đổi hoặc chỉnh lại nguồn đầu vào.')
         }
 
         updateProjectById(pid, { outline, outlineSummary: outline.outlineSummary })
@@ -853,25 +1017,26 @@ export const useAppStore = create<AppState>((set, get) => {
         )
         updateRuntimeFor(pid, { duplicateResult: dupResult })
         if (dupResult.isDuplicate) {
-          addLog(pid, 'warn', `Phát hiện trùng ${Math.round(dupResult.maxSimilarity * 100)}% với "${dupResult.similarTo}"`)
+          addLog(
+            pid,
+            'warn',
+            `Phát hiện trùng ${Math.round(dupResult.maxSimilarity * 100)}% với "${dupResult.similarTo}"`,
+            'Đây là kiểm tra với các dự án đã lưu; dàn ý vẫn đã vượt kiểm định nguồn tham khảo.'
+          )
         }
 
-        const { system: sS, user: sU } = buildViSummaryPrompt(outline, p.style, p.customStyle)
-        const summaryResp = await chat(
-          [{ role: 'system', content: sS }, { role: 'user', content: sU }],
-          undefined,
-          pid
-        )
-        updateProjectById(pid, { viSummary: summaryResp, outlinePhase: 'reviewing' })
+        updateProjectById(pid, { viSummary: outline.outlineSummary, outlinePhase: 'reviewing' })
         updateRuntimeFor(pid, { generationProgress: '' })
-        addLog(pid, 'success', 'Tóm tắt tiếng Việt hoàn thành')
+        addLog(pid, 'success', 'Dàn ý hoàn tất, sẵn sàng để xem hoặc bắt đầu viết')
 
         // Tự động xuyên suốt: có dàn ý là viết luôn, không dừng ở màn xem trước.
         // Chỉ dừng khi phát hiện trùng lặp (cần người quyết). Chuyển tab không sao —
         // chuỗi bám theo pid đã khởi chạy, dự án khác không bị ảnh hưởng.
         const projNow = getProjectById(pid)
         if (projNow?.autoFlow && !isCancelled(pid)) {
-          if (dupResult.isDuplicate) {
+          if (originalityReport?.usableWithWarning) {
+            addLog(pid, 'warn', 'Tự động xuyên suốt tạm dừng để bạn duyệt bản tốt nhất còn cảnh báo')
+          } else if (dupResult.isDuplicate) {
             addLog(pid, 'warn', 'Tự động xuyên suốt tạm dừng — phát hiện trùng cốt truyện, cần bạn xem lại')
           } else {
             addLog(pid, 'info', 'Tự động xuyên suốt — bắt đầu viết ngay...')
@@ -892,7 +1057,7 @@ export const useAppStore = create<AppState>((set, get) => {
           // Dừng khi chưa có outline — quay về bước 2 thay vì kẹt ở màn hình trống
           updateProjectById(pid, { outlinePhase: 'idle', currentStep: 2, status: 'questions' })
         } else {
-          updateProjectById(pid, { outlinePhase: 'idle' })
+          updateProjectById(pid, { outlinePhase: 'generating-outline' })
         }
       } finally {
         clearCancel(pid)
@@ -904,11 +1069,28 @@ export const useAppStore = create<AppState>((set, get) => {
 
     regenerateOutline: async () => { await get().generateOutline() },
 
+    retryOutlineStronger: async () => {
+      const pid = get().activeProjectId
+      if (!pid) return
+      const project = getProjectById(pid)
+      if (!project) return
+      const strongerLevel = getStrongerTransformationLevel(project.transformationLevel || 'original')
+      updateProjectById(pid, { transformationLevel: strongerLevel, originalityReport: null })
+      updateRuntimeFor(pid, { error: null })
+      addLog(pid, 'info', `Thử lại với mức biến đổi mạnh hơn: ${strongerLevel}`)
+      await get().generateOutline(pid)
+    },
+
     confirmAndWrite: async (forPid?: string) => {
       const pid = typeof forPid === 'string' ? forPid : get().activeProjectId
       if (!pid) return
       const p = getProjectById(pid)
       if (!p || !p.outline) return
+      if (p.inspirationProfile && !p.originalityReport?.passed && !p.originalityReport?.usableWithWarning) {
+        updateRuntimeFor(pid, { error: 'Dàn ý chưa vượt kiểm định độc lập nên chưa thể bắt đầu viết.' })
+        addLog(pid, 'warn', 'Đã chặn viết vì dàn ý chưa đạt kiểm định độc lập')
+        return
+      }
       const outline = p.outline
       const now = new Date().toISOString()
 
@@ -1157,7 +1339,6 @@ export const useAppStore = create<AppState>((set, get) => {
       updateRuntimeFor(pid, { error: null })
 
       switch (rt.lastAction) {
-        case 'analyzeScript': return get().analyzeScript()
         case 'generateQuestions': return get().generateQuestions()
         case 'generateOutline': return get().generateOutline()
         case 'confirmAndWrite': return get().continueWriting()

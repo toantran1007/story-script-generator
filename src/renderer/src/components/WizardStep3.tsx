@@ -1,55 +1,14 @@
 import { useAppStore } from '@/stores/storyStore'
 import { StopButton } from '@/components/StopButton'
+import { LogPanel } from '@/components/LogPanel'
 import { countText, readingMinutes, targetCharsFor, distributeCharBudget } from '@/services/textMetrics'
-import type { LogEntry } from '@/stores/storyStore'
-import { useRef, useEffect, type JSX } from 'react'
-
-function LogPanel({ logs }: { logs: LogEntry[] }): JSX.Element {
-  const scrollRef = useRef<HTMLDivElement>(null)
-
-  useEffect(() => {
-    if (scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight
-    }
-  }, [logs.length])
-
-  if (logs.length === 0) return <div />
-
-  const levelIcon = (level: LogEntry['level']): string => {
-    switch (level) {
-      case 'info': return 'ℹ️'
-      case 'warn': return '⚠️'
-      case 'error': return '❌'
-      case 'success': return '✅'
-    }
-  }
-
-  const levelClass = (level: LogEntry['level']): string => `log-entry log-entry--${level}`
-
-  return (
-    <div className="log-panel">
-      <div className="log-panel__header">
-        <span>📋 Nhật ký tiến trình</span>
-        <span className="log-panel__count">{logs.length}</span>
-      </div>
-      <div className="log-panel__body" ref={scrollRef}>
-        {logs.map((log, i) => (
-          <div key={i} className={levelClass(log.level)}>
-            <span className="log-entry__icon">{levelIcon(log.level)}</span>
-            <span className="log-entry__time">{log.time}</span>
-            <span className="log-entry__msg">{log.message}</span>
-          </div>
-        ))}
-      </div>
-    </div>
-  )
-}
+import type { JSX } from 'react'
 
 function OutlineReview(): JSX.Element {
   const p = useAppStore((s) => s.getActiveProject())
   const runtime = useAppStore((s) => s.getActiveRuntime())
   const {
-    setUserDirection, confirmAndWrite, regenerateOutline,
+    setUserDirection, confirmAndWrite, regenerateOutline, retryOutlineStronger,
     clearError, setStep, retryLastAction
   } = useAppStore()
 
@@ -85,6 +44,31 @@ function OutlineReview(): JSX.Element {
         </div>
       )}
 
+      {(p.originalityReport?.passed || p.originalityReport?.usableWithWarning) && (
+        <div className={`originality-report ${p.originalityReport?.usableWithWarning ? 'originality-report--warning' : ''}`}>
+          <div className="originality-report__header">
+            <span>{p.originalityReport?.usableWithWarning ? '⚠ Bản tốt nhất dùng được với cảnh báo' : '✅ Dàn ý đã vượt kiểm định độc lập'}</span>
+            <span className="originality-report__score">{p.originalityReport.score}/100</span>
+          </div>
+          <div className="originality-report__section">
+            Đã thay đổi {p.originalityReport.changedAxes.length}/10 trục cốt truyện. Nguồn chỉ được dùng để học điểm đặc sắc trừu tượng, không dùng lại tên riêng, bối cảnh hay chuỗi tình huống.
+          </div>
+          {p.inspirationProfile && (
+            <div className="originality-report__section">
+              <strong>Đã học hỏi:</strong> {p.inspirationProfile.essence.slice(0, 4).join(' · ') || 'Chủ đề và sức hấp dẫn cốt lõi'}
+            </div>
+          )}
+          <div className="originality-report__section">
+            <strong>Đã thay đổi:</strong> {p.originalityReport.changedAxes.join(' · ')}
+          </div>
+          {!!p.originalityReport.softSimilarities?.length && (
+            <div className="originality-report__section">
+              <strong>Tương đồng cần lưu ý:</strong> {p.originalityReport.softSimilarities.join(' · ')}
+            </div>
+          )}
+        </div>
+      )}
+
       {runtime.duplicateResult?.isDuplicate && (
         <div className="duplicate-warning">
           ⚠ Phát hiện trùng cốt truyện: {Math.round(runtime.duplicateResult.maxSimilarity * 100)}% giống với &quot;{runtime.duplicateResult.similarTo}&quot;
@@ -101,11 +85,6 @@ function OutlineReview(): JSX.Element {
           <span>📝 ~{totalChars.toLocaleString()} ký tự</span>
           <span>⏱ ~{p.duration} phút đọc</span>
         </div>
-      </div>
-
-      <div className="outline-summary">
-        <div className="outline-summary__label">📋 Tóm tắt cốt truyện (tiếng Việt)</div>
-        <div className="outline-summary__content">{p.viSummary}</div>
       </div>
 
       <div className="outline-chapters">
@@ -143,11 +122,17 @@ function OutlineReview(): JSX.Element {
         <button className="btn btn--secondary" onClick={regenerateOutline} disabled={runtime.isGenerating}>
           🔄 Tạo lại dàn ý
         </button>
-        <button className="btn btn--primary" onClick={() => confirmAndWrite()} disabled={runtime.isGenerating}>
+        <button
+          className="btn btn--primary"
+          onClick={() => confirmAndWrite()}
+          disabled={runtime.isGenerating || (!!p.inspirationProfile && !p.originalityReport?.passed && !p.originalityReport?.usableWithWarning)}
+        >
           {runtime.isGenerating ? (
             <><span className="story-output__spinner" />{runtime.generationProgress || 'Đang xử lý...'}</>
           ) : (
-            '✅ Xác nhận & Bắt đầu viết →'
+            p.originalityReport?.usableWithWarning
+              ? 'Dùng bản tốt nhất & Bắt đầu viết →'
+              : '✅ Xác nhận & Bắt đầu viết →'
           )}
         </button>
         <StopButton full />
@@ -158,10 +143,10 @@ function OutlineReview(): JSX.Element {
 
 function GeneratingOutline(): JSX.Element {
   const runtime = useAppStore((s) => s.getActiveRuntime())
-  const { retryLastAction, clearError } = useAppStore()
+  const { retryLastAction, retryOutlineStronger, clearError, setStep } = useAppStore()
 
   return (
-    <div className="wizard">
+    <div className="wizard wizard--generating">
       <div className="wizard__header">
         <div className="wizard__steps-indicator">
           <div className="wizard__step-dot wizard__step-dot--done">✓</div>
@@ -170,19 +155,25 @@ function GeneratingOutline(): JSX.Element {
           <div className="wizard__step-line wizard__step-line--done" />
           <div className="wizard__step-dot wizard__step-dot--active">3</div>
         </div>
-        <h1 className="wizard__title">Đang xây dựng cốt truyện...</h1>
-        <p className="wizard__subtitle">{runtime.generationProgress || 'AI đang suy nghĩ...'}</p>
+        <h1 className="wizard__title">{runtime.error ? 'Chưa tạo được dàn ý' : 'Đang xây dựng cốt truyện...'}</h1>
+        <p className="wizard__subtitle">
+          {runtime.error ? 'Bạn có thể thử lại, tăng mức biến đổi hoặc quay lại chỉnh nguồn.' : runtime.generationProgress || 'AI đang suy nghĩ...'}
+        </p>
       </div>
 
-      <div style={{ marginBottom: 16 }}>
-        <StopButton />
-      </div>
+      {runtime.isGenerating && (
+        <div style={{ marginBottom: 16 }}>
+          <StopButton />
+        </div>
+      )}
 
       {runtime.error && (
         <div className="error-banner">
           <span>{runtime.error}</span>
           <div className="error-banner__actions">
             <button className="btn btn--sm btn--primary" onClick={retryLastAction}>🔄 Thử lại</button>
+            <button className="btn btn--sm btn--secondary" onClick={retryOutlineStronger}>↗ Biến đổi mạnh hơn</button>
+            <button className="btn btn--sm btn--secondary" onClick={() => setStep(1)}>← Chỉnh nguồn</button>
             <button className="error-banner__close" onClick={clearError}>✕</button>
           </div>
         </div>
@@ -191,10 +182,10 @@ function GeneratingOutline(): JSX.Element {
       <LogPanel logs={runtime.logs} />
 
       {!runtime.error && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-          <div className="loading-skeleton" style={{ height: 120, width: '100%' }} />
-          <div className="loading-skeleton" style={{ height: 200, width: '100%' }} />
-          <div className="loading-skeleton" style={{ height: 80, width: '100%' }} />
+        <div className="wizard__loading-grid" aria-label="Đang chuẩn bị nội dung">
+          <div className="loading-skeleton" />
+          <div className="loading-skeleton" />
+          <div className="loading-skeleton" />
         </div>
       )}
     </div>
@@ -204,7 +195,7 @@ function GeneratingOutline(): JSX.Element {
 function StoryOutput(): JSX.Element {
   const p = useAppStore((s) => s.getActiveProject())
   const runtime = useAppStore((s) => s.getActiveRuntime())
-  const { exportProject, resetWizard, clearError, regenerateOutline, continueWriting, retryLastAction } = useAppStore()
+  const { exportProject, resetWizard, clearError, regenerateOutline, continueWriting, retryLastAction, retryOutlineStronger, setStep } = useAppStore()
 
   if (!p) return <div />
 
@@ -250,8 +241,18 @@ function StoryOutput(): JSX.Element {
         <div className="error-banner">
           <span>{runtime.error}</span>
           <div className="error-banner__actions">
-            <button className="btn btn--sm btn--primary" onClick={continueWriting}>▶ Tiếp tục</button>
-            <button className="btn btn--sm btn--secondary" onClick={retryLastAction}>🔄 Thử lại</button>
+            {!p.outline ? (
+              <>
+                <button className="btn btn--sm btn--primary" onClick={retryLastAction}>🔄 Thử lại</button>
+                <button className="btn btn--sm btn--secondary" onClick={retryOutlineStronger}>↗ Biến đổi mạnh hơn</button>
+                <button className="btn btn--sm btn--secondary" onClick={() => setStep(1)}>← Chỉnh nguồn</button>
+              </>
+            ) : (
+              <>
+                <button className="btn btn--sm btn--primary" onClick={continueWriting}>▶ Tiếp tục</button>
+                <button className="btn btn--sm btn--secondary" onClick={retryLastAction}>🔄 Thử lại</button>
+              </>
+            )}
             <button className="error-banner__close" onClick={clearError}>✕</button>
           </div>
         </div>

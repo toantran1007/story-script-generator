@@ -14,6 +14,28 @@ export class CancelledError extends Error {
   }
 }
 
+export class ApiRequestError extends Error {
+  technicalDetail: string
+  attempts: number
+
+  constructor(message: string, technicalDetail: string, attempts: number) {
+    super(message)
+    this.name = 'ApiRequestError'
+    this.technicalDetail = technicalDetail
+    this.attempts = attempts
+  }
+}
+
+function rawErrorDetail(err: unknown): string {
+  return String(err)
+    .replace(/^Error:\s*/, '')
+    .replace(/^Error invoking remote method '[^']+':\s*/, '')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 700)
+}
+
 export function isCancelled(owner: string): boolean {
   return cancelledOwners.has(owner)
 }
@@ -50,7 +72,7 @@ function untrackRequest(owner: string | undefined, requestId: string): void {
 }
 
 // ===== Error cleanup =====
-function cleanApiError(err: unknown): string {
+function cleanApiError(err: unknown, attempts = 1): string {
   const raw = String(err)
   // Cloudflare 524 timeout
   if (raw.includes('524') && raw.includes('timeout')) {
@@ -70,11 +92,14 @@ function cleanApiError(err: unknown): string {
   if (raw.includes('429')) {
     return 'API rate limit (429) — Quá nhiều request. Đợi 30s rồi thử lại.'
   }
-  return raw
+  if (raw.toLowerCase().includes('terminated')) {
+    return 'Kết nối API bị ngắt giữa chừng sau 3 lần thử lại. Hãy giảm số dự án chạy đồng thời rồi tiếp tục.'
+  }
+  return attempts > 1 ? `${raw} (đã thử ${attempts} lần)` : raw
 }
 
 // ===== Retry logic =====
-const MAX_RETRIES = 2
+const MAX_RETRIES = 3
 const RETRY_DELAY_MS = 3000
 
 async function sleep(ms: number): Promise<void> {
@@ -82,14 +107,24 @@ async function sleep(ms: number): Promise<void> {
 }
 
 function isRetryableError(err: unknown): boolean {
-  const errStr = String(err)
+  const errStr = String(err).toLowerCase()
   return (
-    errStr.includes('524') ||
-    errStr.includes('502') ||
-    errStr.includes('503') ||
+    /api error 5\d\d/.test(errStr) ||
+    errStr.includes('429') ||
+    errStr.includes('terminated') ||
+    errStr.includes('und_err_socket') ||
     errStr.includes('timeout') ||
-    errStr.includes('ECONNRESET') ||
-    errStr.includes('fetch failed')
+    errStr.includes('timed out') ||
+    errStr.includes('econnreset') ||
+    errStr.includes('econnrefused') ||
+    errStr.includes('etimedout') ||
+    errStr.includes('epipe') ||
+    errStr.includes('enetreset') ||
+    errStr.includes('enetunreach') ||
+    errStr.includes('eai_again') ||
+    errStr.includes('socket hang up') ||
+    errStr.includes('fetch failed') ||
+    errStr.includes('networkerror')
   )
 }
 
@@ -99,7 +134,9 @@ export async function chat(
   owner?: string
 ): Promise<string> {
   let lastError: unknown
+  let attempts = 0
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    attempts = attempt + 1
     if (owner && isCancelled(owner)) throw new CancelledError()
 
     const requestId = uuidv4()
@@ -112,16 +149,17 @@ export async function chat(
       lastError = err
       // Only retry on timeout/server errors, not on 4xx client errors
       if (!isRetryableError(err) || attempt === MAX_RETRIES) break
+      const delayMs = RETRY_DELAY_MS * (attempt + 1)
       console.warn(
-        `[API] Attempt ${attempt + 1} failed, retrying in ${RETRY_DELAY_MS}ms...`,
+        `[API] Attempt ${attempt + 1} failed, retrying in ${delayMs}ms...`,
         String(err).slice(0, 200)
       )
-      await sleep(RETRY_DELAY_MS * (attempt + 1)) // Exponential backoff
+      await sleep(delayMs)
     } finally {
       untrackRequest(owner, requestId)
     }
   }
-  throw new Error(cleanApiError(lastError))
+  throw new ApiRequestError(cleanApiError(lastError, attempts), rawErrorDetail(lastError), attempts)
 }
 
 export async function chatStream(
@@ -131,7 +169,9 @@ export async function chatStream(
   owner?: string
 ): Promise<string> {
   let lastError: unknown
+  let attempts = 0
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    attempts = attempt + 1
     if (owner && isCancelled(owner)) throw new CancelledError()
 
     const streamId = uuidv4()
@@ -143,24 +183,79 @@ export async function chatStream(
       if (owner && isCancelled(owner)) throw new CancelledError()
       lastError = err
       if (!isRetryableError(err) || attempt === MAX_RETRIES) break
-      console.warn(`[API Stream] Attempt ${attempt + 1} failed, retrying...`)
-      await sleep(RETRY_DELAY_MS * (attempt + 1))
+      const delayMs = RETRY_DELAY_MS * (attempt + 1)
+      console.warn(`[API Stream] Attempt ${attempt + 1} failed, retrying in ${delayMs}ms...`)
+      await sleep(delayMs)
     } finally {
       cleanup()
       untrackRequest(owner, streamId)
     }
   }
-  throw new Error(cleanApiError(lastError))
+  throw new ApiRequestError(cleanApiError(lastError, attempts), rawErrorDetail(lastError), attempts)
 }
 
 export async function testConnection(
   settings?: AppSettings
 ): Promise<{ success: boolean; models?: string[]; error?: string }> {
   try {
-    const data = await window.api.testConnection(settings) as { data?: { id: string }[] }
-    const models = data?.data?.map((m) => m.id) || []
+    const data = await window.api.testConnection(settings) as {
+      data?: Array<{
+        id: string
+        type?: string
+        capabilities?: string[] | Record<string, unknown>
+        modality?: string | string[]
+        model_id?: string
+        model_type?: string
+        provider_prefix?: string
+      }>
+    }
+    const models = (data?.data || [])
+      .filter((model) => isLlmModel(model, settings?.apiProvider))
+      .map((model) => formatModelId(model, settings?.apiProvider))
+      .filter(Boolean)
     return { success: true, models }
   } catch (err) {
     return { success: false, error: cleanApiError(err) }
   }
+}
+
+/** Keep the model picker focused on text/chat models, especially for Vilao's mixed catalog. */
+export function isLlmModel(
+  model: {
+    id: string
+    type?: string
+    capabilities?: string[] | Record<string, unknown>
+    modality?: string | string[]
+    model_type?: string
+  },
+  provider?: AppSettings['apiProvider']
+): boolean {
+  const id = model.id.toLowerCase()
+  const metadata = [
+    model.type,
+    ...(Array.isArray(model.capabilities) ? model.capabilities : Object.keys(model.capabilities || {})),
+    ...(Array.isArray(model.modality) ? model.modality : [model.modality]),
+    model.model_type
+  ].filter(Boolean).join(' ').toLowerCase()
+
+  if (/(image|text-to-image|t2i|video|audio|music|embedding|rerank|text-to-speech|tts|speech-to-text|whisper)/i.test(`${id} ${metadata}`)) {
+    return false
+  }
+
+  // Vilao publishes media models with provider-specific names that may not include a type field.
+  if (provider === 'vilao' && /^(wan|veo|sora|flux|sdxl|stable-diffusion|dall[-.]?e)([-_.]|$)/i.test(id)) {
+    return false
+  }
+
+  return true
+}
+
+export function formatModelId(
+  model: { id: string; model_id?: string; provider_prefix?: string },
+  provider?: AppSettings['apiProvider']
+): string {
+  const id = (model.model_id || model.id).trim()
+  const prefix = (model.provider_prefix || '').trim()
+  if (provider === 'vilao' && prefix && !id.includes('/')) return `${prefix}/${id}`
+  return id
 }

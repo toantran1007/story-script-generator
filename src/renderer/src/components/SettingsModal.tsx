@@ -43,7 +43,10 @@ export function SettingsModal(): JSX.Element {
     const result = await testConnection(candidate)
     if (result.success && result.models) {
       setModels(result.models)
-      if (!candidate.model && result.models.length > 0) {
+      const currentModelIsAvailable = result.models.includes(candidate.model)
+      const shouldSelectFirstLlm = result.models.length > 0 &&
+        (!candidate.model || (candidate.apiProvider === 'vilao' && !currentModelIsAvailable))
+      if (shouldSelectFirstLlm) {
         setForm((current) => normalizeSettings({ ...current, model: result.models![0] }))
       }
     } else {

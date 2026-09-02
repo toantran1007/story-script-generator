@@ -29,7 +29,7 @@ const SPACELESS: Language[] = ['th', 'ja', 'zh']
 /** Giới hạn hợp lệ cho tốc độ đọc tự khai (ký tự/phút). */
 export const READING_SPEED_MIN = 100
 export const READING_SPEED_MAX = 5000
-export const DURATION_MIN = 5
+export const DURATION_MIN = 1
 export const DURATION_MAX = 600
 
 export function normalizeDuration(minutes: number): number {
@@ -79,8 +79,8 @@ export function distributeCharBudget(
   const total = targetCharsFor(minutes, language, override)
   const sum = chapters.reduce((s, c) => s + (c.estimatedWords || 0), 0)
   const even = Math.round(total / chapters.length)
-  if (sum <= 0) return chapters.map(() => Math.max(600, even))
-  return chapters.map((c) => Math.max(600, Math.round((total * (c.estimatedWords || 0)) / sum)))
+  if (sum <= 0) return chapters.map(() => Math.max(1, even))
+  return chapters.map((c) => Math.max(1, Math.round((total * (c.estimatedWords || 0)) / sum)))
 }
 
 /** Đơn vị đo hiển thị cho người dùng, theo ngôn ngữ. */

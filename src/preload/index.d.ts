@@ -6,6 +6,7 @@ interface Api {
   onStreamChunk: (streamId: string, callback: (chunk: string) => void) => () => void
   abortRequest: (requestId: string) => Promise<boolean>
   testConnection: (settings?: unknown) => Promise<unknown>
+  readTxtFile: () => Promise<{ name: string; content: string; bytes: number } | null>
 
   getProjects: () => Promise<unknown[]>
   saveProject: (project: unknown) => Promise<unknown[]>

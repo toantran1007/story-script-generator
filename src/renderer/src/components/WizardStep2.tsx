@@ -1,6 +1,7 @@
 import type { JSX } from 'react'
 import { useAppStore } from '@/stores/storyStore'
 import { StopButton } from '@/components/StopButton'
+import { LogPanel } from '@/components/LogPanel'
 
 function RewriteStep2(): JSX.Element {
   const p = useAppStore((s) => s.getActiveProject())
@@ -36,6 +37,7 @@ function RewriteStep2(): JSX.Element {
             <div key={i} className="loading-skeleton" style={{ height: 80, width: '100%' }} />
           ))}
         </div>
+        <LogPanel logs={runtime.logs} />
       </div>
     )
   }
@@ -212,6 +214,7 @@ function NewStep2(): JSX.Element {
             Tạo dàn ý →
           </button>
         </div>
+        <LogPanel logs={runtime.logs} />
       </div>
     )
   }
@@ -239,6 +242,7 @@ function NewStep2(): JSX.Element {
             <div key={i} className="loading-skeleton" style={{ height: 80, width: '100%' }} />
           ))}
         </div>
+        <LogPanel logs={runtime.logs} />
       </div>
     )
   }
@@ -291,13 +295,11 @@ function NewStep2(): JSX.Element {
           Tạo dàn ý →
         </button>
       </div>
+      <LogPanel logs={runtime.logs} />
     </div>
   )
 }
 
 export function WizardStep2(): JSX.Element {
-  const p = useAppStore((s) => s.getActiveProject())
-  if (!p) return <div />
-
-  return p.projectType === 'rewrite' ? <RewriteStep2 /> : <NewStep2 />
+  return <NewStep2 />
 }

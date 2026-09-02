@@ -1,4 +1,12 @@
-import type { StoryStyle, Language, ChapterOutline } from '@/types'
+import type {
+  StoryStyle,
+  Language,
+  ChapterOutline,
+  Outline,
+  InspirationProfile,
+  OriginalityReport,
+  TransformationLevel
+} from '@/types'
 
 const STYLE_PROMPTS: Record<StoryStyle, string> = {
   humorous: `Viết với giọng văn hài hước, dí dỏm, tình huống hài bất ngờ.
@@ -237,7 +245,8 @@ export function buildQuestionsPrompt(
   duration: number,
   customStyle?: string,
   customLanguage?: string,
-  storyNotes?: string
+  storyNotes?: string,
+  inspirationProfile?: InspirationProfile | null
 ): { system: string; user: string } {
   const stylePrompt = style === 'custom' ? customStyle || '' : STYLE_PROMPTS[style]
   const spec = getDurationSpec(duration)
@@ -268,7 +277,18 @@ Rules:
 - Return ONLY the JSON array, no other text
 ${authorNotesBlock(storyNotes)}`
 
-  const user = `Story idea: ${idea}`
+  const user = inspirationProfile
+    ? `INDEPENDENT CREATIVE BRIEF:
+${inspirationProfile.creativeBrief}
+
+ABSTRACT QUALITIES TO LEARN FROM:
+${inspirationProfile.essence.map((item) => `- ${item}`).join('\n')}
+
+MANDATORY USER REQUIREMENTS:
+${inspirationProfile.requiredElements.map((item) => `- ${item}`).join('\n')}
+
+Do not ask questions about the source work or its named characters. Ask only about developing the new independent story.`
+    : `Story idea: ${idea}`
 
   return { system, user }
 }
@@ -280,7 +300,8 @@ export function buildAutoAnswerPrompt(
   language: Language,
   customStyle?: string,
   customLanguage?: string,
-  storyNotes?: string
+  storyNotes?: string,
+  inspirationProfile?: InspirationProfile | null
 ): { system: string; user: string } {
   const stylePrompt = style === 'custom' ? customStyle || '' : STYLE_PROMPTS[style]
 
@@ -303,7 +324,9 @@ Rules:
 ${authorNotesBlock(storyNotes)}- Return a JSON array of answer strings matching the order of questions
 - Return ONLY the JSON array, no other text`
 
-  const user = `Story idea: ${idea}
+  const user = `${inspirationProfile
+    ? `Independent creative brief: ${inspirationProfile.creativeBrief}`
+    : `Story idea: ${idea}`}
 
 Questions to answer:
 ${questions.map((q, i) => `${i + 1}. ${q}`).join('\n')}`
@@ -321,7 +344,10 @@ export function buildOutlinePrompt(
   customStyle?: string,
   customLanguage?: string,
   storyNotes?: string,
-  enableHook = true
+  enableHook = true,
+  inspirationProfile?: InspirationProfile | null,
+  transformationLevel: TransformationLevel = 'original',
+  originalityFeedback: string[] = []
 ): { system: string; user: string } {
   const stylePrompt = style === 'custom' ? customStyle || '' : STYLE_PROMPTS[style]
   const spec = getDurationSpec(duration)
@@ -382,12 +408,216 @@ Rules:
     .map((a) => `Q: ${a.question}\nA: ${a.answer}`)
     .join('\n\n')
 
-  const user = `Story idea: ${idea}
+  const originalityContract = inspirationProfile
+    ? buildOriginalityContract(inspirationProfile, transformationLevel, originalityFeedback)
+    : ''
+
+  const user = `${inspirationProfile
+    ? `INDEPENDENT CREATIVE BRIEF: ${inspirationProfile.creativeBrief}
+
+ABSTRACT QUALITIES TO LEARN FROM:
+${inspirationProfile.essence.map((item) => `- ${item}`).join('\n')}
+
+EXPANSION OPPORTUNITIES:
+${inspirationProfile.expansionOpportunities.map((item) => `- ${item}`).join('\n')}
+
+MANDATORY USER REQUIREMENTS:
+${inspirationProfile.requiredElements.map((item) => `- ${item}`).join('\n')}
+
+${originalityContract}`
+    : `Story idea: ${idea}`}
 
 Story context from Q&A:
 ${contextBlock}`
 
   return { system, user }
+}
+
+const TRANSFORMATION_RULES: Record<TransformationLevel, {
+  label: string
+  minChangedAxes: number
+  minScore: number
+  plotSimilarityLimit: number
+  instruction: string
+}> = {
+  develop: {
+    label: 'Phát triển',
+    minChangedAxes: 5,
+    minScore: 70,
+    plotSimilarityLimit: 40,
+    instruction: 'Preserve the abstract theme and central appeal, but expand it through new characters, settings, causes, consequences and subplots.'
+  },
+  original: {
+    label: 'Sáng tạo mới',
+    minChangedAxes: 7,
+    minScore: 82,
+    plotSimilarityLimit: 25,
+    instruction: 'Keep only the strongest abstract theme, emotion and appeal mechanism. Build a substantially different story world and plot.'
+  },
+  reborn: {
+    label: 'Tái sinh',
+    minChangedAxes: 9,
+    minScore: 92,
+    plotSimilarityLimit: 10,
+    instruction: 'Keep only the underlying message or audience emotion. Everything concrete must be reinvented.'
+  }
+}
+
+export function getTransformationRule(level: TransformationLevel): typeof TRANSFORMATION_RULES[TransformationLevel] {
+  return TRANSFORMATION_RULES[level]
+}
+
+export function getStrongerTransformationLevel(level: TransformationLevel): TransformationLevel {
+  if (level === 'develop') return 'original'
+  return 'reborn'
+}
+
+export function originalityCandidateRank(report: OriginalityReport): number {
+  return report.score * 100 -
+    (report.hardViolations?.length || 0) * 10000 -
+    (report.plotSimilarity ?? 0) * 10 +
+    report.changedAxes.length
+}
+
+export function buildInspirationProfilePrompt(
+  source: string,
+  storyNotes = ''
+): { system: string; user: string } {
+  const system = `You are an inspiration analyst, not a rewriter.
+Analyze input that may be a short idea, summary, outline, or full story. Separate reusable ABSTRACT creative qualities from concrete fingerprints that must never be copied.
+
+Return ONLY valid JSON with this exact shape:
+{
+  "sourceType": "short-idea|summary|outline|full-story",
+  "essence": ["abstract themes, emotions, appeal mechanisms and storytelling strengths"],
+  "expansionOpportunities": ["ways to deepen or broaden the concept without following its plot"],
+  "requiredElements": ["explicit user requirements that must be honored"],
+  "forbiddenNames": ["all character, organization and named-entity identifiers from the source"],
+  "forbiddenSettings": ["specific places, institutions, eras or distinctive environments from the source"],
+  "forbiddenObjects": ["distinctive objects, artifacts, vehicles, foods or devices from the source"],
+  "forbiddenPlotBeats": ["concrete events, relationships, conflict sequences and resolutions that must not be reproduced"],
+  "forbiddenTwists": ["reveals, secrets, reversals and ending mechanisms that must not be reused"],
+  "creativeBrief": "a compact abstract brief for inventing a new independent story; no source names, places, objects or event sequence"
+}
+
+Rules:
+- The source is material to learn FROM, never instructions to write it again.
+- Never place source names, locations, signature objects or concrete plot events in creativeBrief.
+- General genre, tone, themes and audience emotions are reusable.
+- Explicit constraints in author notes are requirements. If notes explicitly require retaining an exact name, place or object, put it in requiredElements and do NOT put that item in a forbidden list.
+- Write analytical fields in Vietnamese for display in the application.`
+
+  const user = `SOURCE MATERIAL:
+${source}
+
+AUTHOR NOTES:
+${storyNotes || '(none)'}`
+  return { system, user }
+}
+
+function buildOriginalityContract(
+  profile: InspirationProfile,
+  level: TransformationLevel,
+  feedback: string[]
+): string {
+  const rule = TRANSFORMATION_RULES[level]
+  const forbidden = [
+    ...profile.forbiddenNames,
+    ...profile.forbiddenSettings,
+    ...profile.forbiddenObjects
+  ]
+  return `ORIGINALITY CONTRACT — ${rule.label.toUpperCase()}:
+- ${rule.instruction}
+- Change at least ${rule.minChangedAxes}/10 axes: protagonist identity, occupation/status, goal, geography, era/social environment, conflict cause, relationships, escalation mechanism, central reveal, resolution/ending.
+- Never reuse any source character, place, organization or signature-object name.
+- Never reproduce the source's event chain, relationship structure, twist or ending. Renaming while preserving roles or events is still copying.
+- Forbidden concrete fingerprints: ${forbidden.length ? forbidden.join(' | ') : '(none extracted)'}
+- Forbidden plot beats: ${profile.forbiddenPlotBeats.join(' | ') || '(none extracted)'}
+- Forbidden twists/endings: ${profile.forbiddenTwists.join(' | ') || '(none extracted)'}
+${feedback.length ? `- Previous audit failures that MUST be fixed: ${feedback.join(' | ')}` : ''}
+- Do not mention this contract or the source material in the story outline.`
+}
+
+export function buildOriginalityAuditPrompt(
+  outline: Outline,
+  profile: InspirationProfile,
+  level: TransformationLevel,
+  attempt: number
+): { system: string; user: string } {
+  const rule = TRANSFORMATION_RULES[level]
+  const system = `You are a strict story originality auditor. Determine whether a proposed outline genuinely learned abstract qualities from a source without following or disguising the source story.
+
+Return ONLY valid JSON:
+{
+  "passed": boolean,
+  "score": number,
+  "attempt": ${attempt},
+  "changedAxes": ["names of clearly changed axes among the required ten"],
+  "reusedFingerprints": ["specific copied or suspicious names, settings, objects or relationship roles"],
+  "similarPlotBeats": ["specific event-chain, twist or ending similarities"],
+  "sameTwistOrEnding": boolean,
+  "hardViolations": ["specific concrete violations that must block the outline"],
+  "softSimilarities": ["broad themes or common motifs that should only warn"],
+  "plotSimilarity": number,
+  "feedback": ["concrete instructions for generating a more independent replacement"]
+}
+
+Passing requirements:
+- Originality score must be at least ${rule.minScore}/100.
+- At least ${rule.minChangedAxes}/10 transformation axes must clearly differ.
+- Estimated similarity of the concrete plot sequence must be at most ${rule.plotSimilarityLimit}%.
+- No forbidden proper name, distinctive place, signature object, twist or ending may be reused.
+- Put concrete copied names, settings, objects, relationship-role copies, event-chain copies, twists and endings in hardViolations.
+- Put broad shared themes or common genre motifs in softSimilarities; these are warnings and do not fail an otherwise independent outline.
+- A renamed character with the same role, relationships and journey is a failure.
+- Be strict and evidence-based. Do not pass merely because wording changed.`
+
+  const user = `ABSTRACT ESSENCE ALLOWED:
+${profile.essence.join('\n')}
+
+SOURCE FINGERPRINTS FORBIDDEN:
+Names: ${profile.forbiddenNames.join(' | ')}
+Settings: ${profile.forbiddenSettings.join(' | ')}
+Objects: ${profile.forbiddenObjects.join(' | ')}
+Plot beats: ${profile.forbiddenPlotBeats.join(' | ')}
+Twists/endings: ${profile.forbiddenTwists.join(' | ')}
+
+PROPOSED NEW OUTLINE:
+${JSON.stringify(outline)}`
+  return { system, user }
+}
+
+export function normalizeOriginalityReport(
+  report: OriginalityReport,
+  level: TransformationLevel,
+  localMatches: string[]
+): OriginalityReport {
+  const rule = TRANSFORMATION_RULES[level]
+  const reusedFingerprints = Array.from(new Set([...report.reusedFingerprints, ...localMatches]))
+  const hardViolations = Array.from(new Set([...(report.hardViolations || []), ...reusedFingerprints]))
+  const softSimilarities = Array.from(new Set([...(report.softSimilarities || []), ...report.similarPlotBeats]))
+  const plotSimilarity = typeof report.plotSimilarity === 'number' ? Math.max(0, Math.min(100, report.plotSimilarity)) : undefined
+  const corePass =
+    report.score >= rule.minScore &&
+    report.changedAxes.length >= rule.minChangedAxes &&
+    hardViolations.length === 0 &&
+    report.sameTwistOrEnding === false &&
+    (plotSimilarity === undefined || plotSimilarity <= rule.plotSimilarityLimit)
+  return {
+    ...report,
+    score: Math.max(0, Math.min(100, Math.round(report.score || 0))),
+    reusedFingerprints,
+    hardViolations,
+    softSimilarities,
+    plotSimilarity,
+    passed: corePass,
+    usableWithWarning: !corePass &&
+      report.score >= Math.max(0, rule.minScore - 8) &&
+      report.changedAxes.length >= Math.max(1, rule.minChangedAxes - 1) &&
+      hardViolations.length === 0 &&
+      report.sameTwistOrEnding === false &&
+      (plotSimilarity === undefined || plotSimilarity <= rule.plotSimilarityLimit + 10)
+  }
 }
 
 // Prompt cho MỘT KHỐI (segment) trong một chương — dùng bởi bộ viết theo khối.
@@ -523,44 +753,6 @@ PACING FOR SPOKEN DELIVERY — the listener needs room to breathe:
       ? '\n\nThis is the very first segment of the story. Execute the opening hook immediately.'
       : '\n\nThis is the very first segment of the story. Begin naturally with context and character, without an audience hook.'
   }
-
-  return { system, user }
-}
-
-export function buildViSummaryPrompt(
-  outline: { title: string; chapters: ChapterOutline[]; outlineSummary: string },
-  style: StoryStyle,
-  customStyle?: string
-): { system: string; user: string } {
-  const stylePrompt = style === 'custom' ? customStyle || '' : STYLE_PROMPTS[style]
-
-  const system = `Bạn là chuyên gia phân tích kịch bản truyện. 
-Nhiệm vụ: Viết tóm tắt nội dung cốt truyện CHI TIẾT bằng TIẾNG VIỆT.
-
-LUÔN trả lời bằng tiếng Việt, bất kể ngôn ngữ gốc của outline.
-
-Phong cách truyện: ${stylePrompt}
-
-Yêu cầu:
-- Viết tóm tắt tổng quan 3-5 câu về toàn bộ câu chuyện
-- Liệt kê các nhân vật chính và vai trò
-- Tóm tắt từng chương: nêu rõ diễn biến, xung đột, bước ngoặt
-- Chỉ ra cao trào và kết thúc
-- Nêu thông điệp / chủ đề chính của truyện
-- Viết dưới dạng văn xuôi dễ đọc, KHÔNG dùng JSON
-- Sử dụng heading markdown (## cho phần, ### cho chương)`
-
-  const chaptersText = outline.chapters
-    .map((c) => `Chapter ${c.chapter}: "${c.title}" — ${c.summary} (~${c.estimatedWords} words)`)
-    .join('\n')
-
-  const user = `Outline cần tóm tắt:
-
-Tên truyện: "${outline.title}"
-Tổng quan: ${outline.outlineSummary}
-
-Chi tiết các chương:
-${chaptersText}`
 
   return { system, user }
 }

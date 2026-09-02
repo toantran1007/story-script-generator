@@ -85,7 +85,6 @@ export function Dashboard(): JSX.Element {
                   className="dashboard-card__status"
                   style={{ color: statusColor(project.status) }}
                 >
-                  {project.projectType === 'rewrite' ? '🔄 ' : ''}
                   {STATUS_LABELS[project.status]}
                 </span>
                 <button
