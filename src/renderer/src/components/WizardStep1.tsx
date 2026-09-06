@@ -341,13 +341,13 @@ export function WizardStep1(): JSX.Element {
             onChange={(e) => setEnableHook(e.target.checked)}
           />
           <span>
-            🪝 <strong>Tạo hook mở đầu</strong> — mở truyện bằng tình huống hoặc câu hỏi giữ chân người nghe
+            🪝 <strong>Tạo hook hậu kỳ</strong> — chọn cảnh ấn tượng từ full truyện để làm đoạn mở đầu giữ người xem
           </span>
         </label>
         <div className="form-hint">
           {p.enableHook !== false
-            ? 'Dàn ý và khoảng hai phút đầu sẽ được thiết kế để tạo tò mò, căng thẳng hoặc stakes rõ ràng.'
-            : 'Truyện sẽ bắt đầu tự nhiên theo bối cảnh và nhân vật, không ép tạo hook hoặc curiosity loop.'}
+            ? 'Sau khi viết xong toàn bộ, tool sẽ chọn một cảnh thật nổi bật trong truyện và biên tập thành hook liên kết với mạch truyện.'
+            : 'Truyện sẽ bắt đầu tự nhiên theo bối cảnh và nhân vật, không tạo hook hậu kỳ.'}
         </div>
       </div>
 

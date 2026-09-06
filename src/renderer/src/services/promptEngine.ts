@@ -110,6 +110,94 @@ export function resolveTargetLanguageName(
   return language === 'custom' ? customLanguage?.trim() || 'the user-defined language' : names[language]
 }
 
+export const STORY_VIDEO_RULES = `STORY VIDEO VISUAL RULES:
+- Write for a narrated story video, not an audio-only novel. Every paragraph should describe one clear visual beat that can be illustrated in a shot of roughly ten seconds.
+- Keep one dominant location, time, action and emotional focus per paragraph. Move to a new paragraph when the shot, camera focus, location or time changes.
+- Lead with visible subjects, actions, expressions, objects and environmental changes. Replace abstract explanation with concrete behavior or a visual detail whenever possible.
+- Do not stack several major actions into one paragraph. Let each beat finish with a readable pose, reaction, discovery or consequence before the next beat begins.
+- Introduce characters, costumes, important objects and locations clearly, then keep their appearance, position, lighting and continuity stable across nearby paragraphs.
+- Keep dialogue and inner thoughts concise enough to fit beside the visuals. Avoid long monologues, invisible backstory dumps and philosophical commentary that cannot be shown.
+- System panels, quest windows, skill notices, level displays, signs and any other visible on-screen text are story content: write every visible word in the target script language, never Vietnamese or English, and keep the same terminology consistent throughout the story.`
+
+export const DIRECT_SERIALIZED_SCRIPT_RULES = `DIRECT SERIALIZED SCRIPT STYLE:
+- Tell events in clear chronological order: establish the exact time/place only when useful, then show what the character does, what happens, and the immediate consequence.
+- Keep each paragraph focused on one action, discovery, system update, threat or decision. Do not combine several major events into one paragraph.
+- Prefer short, concrete sentences and strong action verbs. Keep most sentences under roughly twenty words unless dialogue or a system value requires more.
+- Put dialogue on its own line. Keep dialogue natural, brief and directly connected to the current action.
+- Use concrete nouns and measurable values for status panels, levels, skills, damage, rewards and mission conditions. Format system output as compact readable lines.
+- Avoid ornate scenery, decorative adjectives, metaphors, poetic comparisons, philosophical commentary, abstract emotional essays and long explanations that do not change the next action.
+- Show emotion through visible behavior, decisions, speech and consequences instead of naming an abstract feeling.
+- Every paragraph must move the plot, reveal a rule, raise a threat, deliver a reward or set up the next concrete action. Remove filler transitions and repeated reactions.
+- Do not add camera directions, screenplay shot labels, narrator commentary or production notes inside the story text.`
+
+function listOrFallback(items: string[] | undefined, fallback: string): string {
+  return items && items.length > 0 ? items.map((item) => `- ${item}`).join('\n') : `- ${fallback}`
+}
+
+function inferGenreAnchors(stylePrompt: string): string[] {
+  const text = stylePrompt.toLocaleLowerCase()
+  const anchors: string[] = []
+  if (/(anime|hoạt hình nhật|manga)/u.test(text)) {
+    anchors.push('Anime-style character expressiveness, visual set pieces, strong rival dynamics and emotionally legible reactions')
+  }
+  if (/(fantasy|giả tưởng|ma pháp|phép thuật)/u.test(text)) {
+    anchors.push('A clearly fantastical world with concrete magic, creatures, artifacts or supernatural rules; do not flatten it into realistic social drama')
+  }
+  if (/(isekai|xuyên không|giao thương|cross.world|between worlds|hai thế giới)/u.test(text)) {
+    anchors.push('Cross-world travel or trade is a narrative relationship only: preserve each named world\'s own era, technology and social reality instead of merging them into a future or generic fantasy civilization')
+  }
+  if (/(academy|học viện|học viên|trường học|school|student)/u.test(text)) {
+    anchors.push('Student or academy life as an active setting: classes, training, exams, clubs, missions, rivalries or tournaments')
+  }
+  if (/(litrpg|hệ thống|thăng cấp|level|lv\.?|cấp độ|skill|kỹ năng|class|nghề nghiệp)/u.test(text)) {
+    anchors.push('Visible progression loop: levels, skills, quests, measurable milestones, rewards and meaningful power growth')
+  }
+  if (/(action|hành động|chiến đấu|battle|adventure|phiêu lưu)/u.test(text)) {
+    anchors.push('Concrete action and adventure scenes with tactical obstacles, escalating threats and physical consequences')
+  }
+  return anchors
+}
+
+/** Keep the selected genre dominant while allowing the source to contribute only compatible DNA. */
+export function buildGenreFidelityContract(
+  style: StoryStyle,
+  customStyle?: string,
+  inspirationProfile?: InspirationProfile | null
+): string {
+  const selected = resolveStylePrompt(style, customStyle).trim() || '(no additional style description)'
+  const profile = inspirationProfile
+  const inferredAnchors = inferGenreAnchors(selected)
+  return `GENRE FIDELITY CONTRACT — THE SELECTED TAG ALWAYS WINS:
+- Selected style/tag: ${selected}
+- Treat the selected style as a binding genre contract, not a mood suggestion. Never replace it with another genre.
+- Preserve the source's compatible genre DNA, core premise, progression loop and audience payoff, while changing concrete names, places, objects, event chains and ending as required by the originality contract.
+- If the source suggests a conflicting genre, discard that conflict. The selected tag has priority for genre, tone and scene grammar; explicit world, era and technology facts remain hard continuity constraints.
+- Every chapter must contain concrete actions, obstacles, choices or visible consequences that express the selected genre. Do not let political debate, social commentary, philosophy, governance or abstract symbolism become the main plot unless the selected tag or author notes explicitly require it.
+- Abstract themes are seasoning, not the story engine. Keep the narrative centered on the selected genre's characters, goals, conflict, scene types, pacing and rewards.
+- Do not add a new genre merely because it offers deeper world-building or moral complexity.
+
+CONCRETE SELECTED-TAG ANCHORS:
+${listOrFallback(inferredAnchors, 'Use concrete scenes, conflicts and pacing that make the selected tag unmistakable.')}
+
+SOURCE GENRE DNA TO PRESERVE (compatible only):
+${listOrFallback(profile?.genreCore, 'Infer the selected genre conventions from the tag and apply them concretely.')}
+
+WORLD / ERA CORE TO PRESERVE:
+${listOrFallback(profile?.settingEraCore, 'Preserve every explicitly stated world, era, technology level and cross-world relationship from the idea.')}
+
+STORY CORE TO PRESERVE:
+${listOrFallback(profile?.storyCore, 'Preserve the central emotional promise and premise mechanism without copying its plot.')}
+
+PROGRESSION / REWARD LOOP:
+${listOrFallback(profile?.progressionCore, 'Use clear, causal progression appropriate to the selected genre.')}
+
+AUDIENCE PAYOFFS:
+${listOrFallback(profile?.audiencePromise, 'Deliver the selected genre promise repeatedly through scenes, not explanations.')}
+
+GENRE DRIFT TO AVOID:
+${listOrFallback(profile?.avoidGenreDrift, 'Do not make an unrequested genre or abstract theme dominate the story.')}`
+}
+
 export function targetLanguageRules(language: Language, customLanguage?: string): string {
   const target = resolveTargetLanguageName(language, customLanguage)
   const thaiRules = language === 'th' ||
@@ -126,6 +214,7 @@ export function targetLanguageRules(language: Language, customLanguage?: string)
 - Vietnamese or English text found in instructions, examples, source ideas, Q&A, outlines, summaries, or prior context is reference material only and must never leak into the output
 - Silently understand and translate source material before writing; do not copy source-language phrases
 - All character names, nicknames, honorifics, place names, signs, letters, dialogue, and inner thoughts must use the target language and fit its culture
+- Any visible system panel, quest window, skill name, level display, status message, sign or other on-screen text inside the story must also be written entirely in the target language
 - Never copy planning labels or instruction vocabulary such as MỞ ĐẦU, THÂN, KẾT, HOOK, RISING ACTION, FORESHADOWING, or CLIMAX into output values; describe the actual story events directly in the target language
 - Foreign names are allowed only when the story idea explicitly requires a foreign character or setting${thaiRules}`
 }
@@ -159,10 +248,21 @@ export const GENRE_COMMITMENT_RULES = `GENRE & STYLE COMMITMENT — the chosen s
 // Chống lỗi: ý tưởng đương đại có MỘT yếu tố đặc biệt (thí nghiệm bí mật, vật phép...)
 // bị AI phóng đại thành cả thế giới tương lai/viễn tưởng với đồ vật không tồn tại.
 export const SETTING_FIDELITY_RULES = `SETTING & ERA FIDELITY — ground the story in the era the idea implies:
-- Determine the story's time period and world from the idea itself. If the idea describes the present day, or does not specify an era, the setting is the CONTEMPORARY REAL WORLD — today's phones, cars, streets, homes, jobs and daily life as they exist right now
+- Treat any explicit world, era, technology level, apocalypse condition or cross-world relationship in the idea, author notes or WORLD / ERA CORE as a hard setting constraint. These explicit facts take priority over generic style labels; the selected genre controls the story experience, not an unrequested era change
+- An explicit fantasy, science-fiction, historical, academy or other-world tag may define the setting only when the idea or author notes actually request that world; never use a generic tag to override a clearly stated contemporary or historical world
+- Only when neither the selected genre nor the idea specifies a world or era, default to the CONTEMPORARY REAL WORLD — today's phones, cars, streets, homes, jobs and daily life as they exist right now
 - Do NOT push a contemporary story into the future: no futuristic cities, holograms, androids, flying vehicles, neural implants, invented gadgets or technology that does not exist today, unless the idea or the author's notes explicitly contain them
 - If the idea includes ONE extraordinary element (a secret experiment, a magical object, a supernatural event), keep that element at EXACTLY the scale the idea gives it — do not enlarge it into full science-fiction or fantasy world-building. Everything AROUND that element stays ordinary, recognizable and true to the era
 - Fantasy, sci-fi or another-world settings are used ONLY when the idea clearly calls for them; historical settings must stay period-accurate with no anachronisms`
+
+// Explicitly named worlds and eras are hard continuity constraints, not optional flavor.
+export const CROSS_WORLD_ERA_RULES = `CROSS-WORLD / ERA CONTINUITY:
+- If the idea explicitly names multiple worlds or eras, preserve each one separately. Contemporary means present-day technology and society; historical means its actual past period.
+- Cross-world travel or trade does not turn either side into the future, a sci-fi civilization or a fantasy civilization unless the idea explicitly requests that.
+- A system, shop, portal or supernatural rule is a contained story mechanism. Do not invent futuristic infrastructure, holograms, androids, magical technology or steampunk machinery around it.
+- Keep the source's stated apocalypse, zombie, disaster or scarcity condition at its stated technology level and social reality.
+- For isekai, reincarnation, regression, rebirth and second-chance stories, honor the familiar premise grammar the idea actually names: keep the requested origin world, destination world, rebirth status and established fantasy/magic setting recognizable.
+- Do not invent extra dimensions, civilizations, cosmic explanations, magic systems, academies, factions or future technologies merely to make the premise feel bigger. Expand conflicts inside the requested worlds and their established rules.`
 
 export function openingStrategyRules(enableHook: boolean): string {
   if (enableHook) {
@@ -250,6 +350,7 @@ export function buildQuestionsPrompt(
 ): { system: string; user: string } {
   const stylePrompt = style === 'custom' ? customStyle || '' : STYLE_PROMPTS[style]
   const spec = getDurationSpec(duration)
+  const genreFidelity = buildGenreFidelityContract(style, customStyle, inspirationProfile)
 
   const system = `You are a professional story consultant and script writer.
 Your task: Based on the user's idea, ask 3-5 strategic questions to flesh out the story.
@@ -265,7 +366,10 @@ ${targetLanguageRules(language, customLanguage)}
 
 ${GENRE_COMMITMENT_RULES}
 
+${genreFidelity}
+
 ${SETTING_FIDELITY_RULES}
+${CROSS_WORLD_ERA_RULES}
 
 Rules:
 - Ask questions that will significantly improve the story's depth and uniqueness
@@ -304,6 +408,7 @@ export function buildAutoAnswerPrompt(
   inspirationProfile?: InspirationProfile | null
 ): { system: string; user: string } {
   const stylePrompt = style === 'custom' ? customStyle || '' : STYLE_PROMPTS[style]
+  const genreFidelity = buildGenreFidelityContract(style, customStyle, inspirationProfile)
 
   const system = `You are a creative story consultant. Answer the following questions about a story idea creatively and thoughtfully.
 Style direction: ${stylePrompt}
@@ -313,7 +418,10 @@ ${targetLanguageRules(language, customLanguage)}
 
 ${GENRE_COMMITMENT_RULES}
 
+${genreFidelity}
+
 ${SETTING_FIDELITY_RULES}
+${CROSS_WORLD_ERA_RULES}
 
 Rules:
 - Be creative and unexpected with your answers — avoid clichés
@@ -351,6 +459,7 @@ export function buildOutlinePrompt(
 ): { system: string; user: string } {
   const stylePrompt = style === 'custom' ? customStyle || '' : STYLE_PROMPTS[style]
   const spec = getDurationSpec(duration)
+  const genreFidelity = buildGenreFidelityContract(style, customStyle, inspirationProfile)
 
   const antiDuplicate =
     existingOutlines.length > 0
@@ -377,11 +486,16 @@ ${antiDuplicate}
 
 ${GENRE_COMMITMENT_RULES}
 
+${genreFidelity}
+
 ${SETTING_FIDELITY_RULES}
+${CROSS_WORLD_ERA_RULES}
 
 ${openingStrategyRules(enableHook)}
 
 ${NATIVE_VOICE_RULES}
+${STORY_VIDEO_RULES}
+${DIRECT_SERIALIZED_SCRIPT_RULES}
 ${authorNotesBlock(storyNotes)}
 Rules:
 - Create exactly ${spec.chapters} chapters/sections
@@ -418,7 +532,7 @@ Rules:
 ABSTRACT QUALITIES TO LEARN FROM:
 ${inspirationProfile.essence.map((item) => `- ${item}`).join('\n')}
 
-EXPANSION OPPORTUNITIES:
+OPTIONAL EXPANSION OPPORTUNITIES — use only when they intensify the selected genre; ignore any item that causes genre drift:
 ${inspirationProfile.expansionOpportunities.map((item) => `- ${item}`).join('\n')}
 
 MANDATORY USER REQUIREMENTS:
@@ -430,6 +544,42 @@ ${originalityContract}`
 Story context from Q&A:
 ${contextBlock}`
 
+  return { system, user }
+}
+
+/** Build a post-production hook from the completed story so it stays faithful to the final plot. */
+export function buildPostStoryHookPrompt(
+  story: string,
+  style: StoryStyle,
+  language: Language,
+  hookChars: number,
+  customStyle?: string,
+  customLanguage?: string,
+  inspirationProfile?: InspirationProfile | null
+): { system: string; user: string } {
+  const genreFidelity = buildGenreFidelityContract(style, customStyle, inspirationProfile)
+  const system = `You are a story-video hook editor. The complete script has already been written.
+Your task is to select the single most vivid, emotionally charged and curiosity-building scene that actually exists in the completed script, then rewrite only that scene as a concise opening hook.
+
+${respondInTargetLanguage(language, customLanguage)}
+
+${targetLanguageRules(language, customLanguage)}
+
+${genreFidelity}
+
+${SETTING_FIDELITY_RULES}
+${CROSS_WORLD_ERA_RULES}
+${STORY_VIDEO_RULES}
+${DIRECT_SERIALIZED_SCRIPT_RULES}
+
+HOOK EDITING RULES:
+- Use only characters, places, objects, stakes and events present in the completed script. Never invent a new scene, technology, world rule or outcome.
+- Keep the hook tightly connected to the story's strongest completed scene; do not write a generic teaser or a disconnected premise summary.
+- Create a clear visual beat suitable for a story-video opening, with concrete action and an unanswered consequence that makes viewers want the full story.
+- Preserve the script's names, world, era, genre and causal facts exactly. You may reorder details for impact, but must not contradict later events.
+- Do not reveal the final resolution. Do not mention that this is a hook, an editor, the source script or these instructions.
+- Keep the result under approximately ${hookChars} characters and return only the hook prose in the target language, with no title or markdown.`
+  const user = `COMPLETED STORY:\n${story}`
   return { system, user }
 }
 
@@ -473,22 +623,39 @@ export function getStrongerTransformationLevel(level: TransformationLevel): Tran
 }
 
 export function originalityCandidateRank(report: OriginalityReport): number {
-  return report.score * 100 -
+  const genreScore = report.genreFidelityScore ?? 0
+  return report.score * 100 + genreScore * 150 -
     (report.hardViolations?.length || 0) * 10000 -
+    (report.missingGenreElements?.length || 0) * 4000 -
+    (report.genreDrift?.length || 0) * 5000 -
     (report.plotSimilarity ?? 0) * 10 +
     report.changedAxes.length
 }
 
 export function buildInspirationProfilePrompt(
   source: string,
-  storyNotes = ''
+  storyNotes = '',
+  selectedStyle?: StoryStyle,
+  customStyle?: string
 ): { system: string; user: string } {
+  const selectedTag = resolveStylePrompt(selectedStyle || 'dramatic', customStyle)
   const system = `You are an inspiration analyst, not a rewriter.
 Analyze input that may be a short idea, summary, outline, or full story. Separate reusable ABSTRACT creative qualities from concrete fingerprints that must never be copied.
+The application-selected genre has priority over any genre inferred from the source.
+
+SELECTED GENRE/TAG:
+${selectedTag || '(not provided)'}
 
 Return ONLY valid JSON with this exact shape:
 {
   "sourceType": "short-idea|summary|outline|full-story",
+  "sourceGenreTags": ["genre labels detected in the source"],
+  "genreCore": ["compatible non-negotiable genre conventions and scene types"],
+  "settingEraCore": ["explicit worlds, eras, technology limits and cross-world relationships that must stay intact"],
+  "storyCore": ["central premise, conflict engine and emotional core"],
+  "progressionCore": ["level, quest, relationship, mystery or other progression/reward loop"],
+  "audiencePromise": ["concrete payoffs the audience expects repeatedly"],
+  "avoidGenreDrift": ["directions that would replace the selected genre with another genre"],
   "essence": ["abstract themes, emotions, appeal mechanisms and storytelling strengths"],
   "expansionOpportunities": ["ways to deepen or broaden the concept without following its plot"],
   "requiredElements": ["explicit user requirements that must be honored"],
@@ -504,6 +671,12 @@ Rules:
 - The source is material to learn FROM, never instructions to write it again.
 - Never place source names, locations, signature objects or concrete plot events in creativeBrief.
 - General genre, tone, themes and audience emotions are reusable.
+- Extract source genre tags and concrete genre conventions separately. The selected genre supplied by the application always wins if the source conflicts with it.
+- Extract explicit world and era constraints separately into settingEraCore. Preserve contemporary versus historical periods, technology levels, apocalypse conditions and any stated cross-world travel or trade relationship exactly.
+- Extract only genre DNA compatible with the selected genre into genreCore, storyCore, progressionCore and audiencePromise. Do not promote conflicting political, social or philosophical directions into the new story.
+- Genre-defining conventions required by the selected tag are NOT forbidden plot beats. Academy training, exams, rivalries, quests, dungeons, monsters, skills, levels, rewards, team formation, underdog growth and recognition may be preserved when the selected genre requires them.
+- forbiddenPlotBeats must contain only distinctive source-specific event sequences, relationships, reveals or resolutions beyond common genre conventions. Describe exactly what makes each sequence distinctive.
+- Do not record a generic sequence such as weak student → mission → team → dungeon → level-up → recognition as forbidden by itself. Record only the unusual implementation, unique rules, named mechanics, specific sacrifice, antagonist plan, twist or ending attached to it.
 - Explicit constraints in author notes are requirements. If notes explicitly require retaining an exact name, place or object, put it in requiredElements and do NOT put that item in a forbidden list.
 - Write analytical fields in Vietnamese for display in the application.`
 
@@ -528,7 +701,10 @@ function buildOriginalityContract(
   ]
   return `ORIGINALITY CONTRACT — ${rule.label.toUpperCase()}:
 - ${rule.instruction}
-- Change at least ${rule.minChangedAxes}/10 axes: protagonist identity, occupation/status, goal, geography, era/social environment, conflict cause, relationships, escalation mechanism, central reveal, resolution/ending.
+- The selected genre contract and its required conventions are protected. Do not remove or replace them merely to increase originality.
+- Shared genre machinery, tropes and progression beats are allowed. Originality comes from their new implementation, causal chain, characters, world rules, complications, reveals and resolution.
+- Change at least ${rule.minChangedAxes}/10 mutable axes: protagonist identity, occupation/status, goal, geography, conflict cause, relationships, escalation mechanism, central reveal, resolution/ending, and subplots. Era/social environment may change ONLY when it is not protected by the world/era core or explicit author requirements.
+- Never count a required contemporary setting, historical period, apocalypse condition, technology level or cross-world relationship as an originality axis to change.
 - Never reuse any source character, place, organization or signature-object name.
 - Never reproduce the source's event chain, relationship structure, twist or ending. Renaming while preserving roles or events is still copying.
 - Forbidden concrete fingerprints: ${forbidden.length ? forbidden.join(' | ') : '(none extracted)'}
@@ -542,10 +718,13 @@ export function buildOriginalityAuditPrompt(
   outline: Outline,
   profile: InspirationProfile,
   level: TransformationLevel,
-  attempt: number
+  attempt: number,
+  style: StoryStyle = 'dramatic',
+  customStyle?: string
 ): { system: string; user: string } {
   const rule = TRANSFORMATION_RULES[level]
-  const system = `You are a strict story originality auditor. Determine whether a proposed outline genuinely learned abstract qualities from a source without following or disguising the source story.
+  const genreContract = buildGenreFidelityContract(style, customStyle, profile)
+  const system = `You are a strict story originality and genre-fidelity auditor. Determine whether a proposed outline learned the source's compatible core without copying its concrete story and whether it fulfills the selected genre instead of drifting into another genre.
 
 Return ONLY valid JSON:
 {
@@ -559,6 +738,13 @@ Return ONLY valid JSON:
   "hardViolations": ["specific concrete violations that must block the outline"],
   "softSimilarities": ["broad themes or common motifs that should only warn"],
   "plotSimilarity": number,
+  "genreFidelityScore": number,
+  "settingFidelityScore": number,
+  "settingEvidence": ["specific proof that each required world and era is preserved"],
+  "settingDrift": ["future, fantasy, sci-fi or historical contradictions"],
+  "genreEvidence": ["specific scenes, conflicts, progression beats and rewards that fulfill the selected genre"],
+  "missingGenreElements": ["required genre-core elements that are absent or too weak"],
+  "genreDrift": ["unselected genres, politics, social commentary or abstraction that displaced the intended story experience"],
   "feedback": ["concrete instructions for generating a more independent replacement"]
 }
 
@@ -569,11 +755,25 @@ Passing requirements:
 - No forbidden proper name, distinctive place, signature object, twist or ending may be reused.
 - Put concrete copied names, settings, objects, relationship-role copies, event-chain copies, twists and endings in hardViolations.
 - Put broad shared themes or common genre motifs in softSimilarities; these are warnings and do not fail an otherwise independent outline.
+- Never classify a convention required by the selected tag or genre contract as a hard violation by itself. Academy training, exams, rivals, quests, dungeons, battles, monsters, skills, levels, rewards, teams, underdog growth and eventual recognition are reusable genre grammar.
+- When a required genre convention appears, judge whether its concrete implementation, causes, sequence, world rules, relationships, complications and outcome are newly invented. Fail only when the distinctive source-specific execution is reproduced.
+- Do not fail on a shared high-level progression order alone. A hard violation requires at least two distinctive source-specific details beyond reusable genre grammar, such as the same named mechanic, exact test condition, unique cost, antagonist plan, twist or ending.
+- Ignore shared genre grammar when estimating plotSimilarity. Compare distinctive causal links and concrete implementation instead.
 - A renamed character with the same role, relationships and journey is a failure.
+- Genre fidelity must score at least 85/100. Judge concrete events and chapter emphasis, not the mere presence of genre words.
+- Setting fidelity must score at least 90/100. Check every world, era, technology limit, apocalypse condition and cross-world relationship in WORLD / ERA CORE.
+- A contemporary world must remain present-day, not futuristic. A historical world must remain period-accurate, not an invented fantasy civilization. A contained system or portal does not justify speculative technology around it.
+- Any future-city, hologram, invented device, fantasy society, anachronistic technology or changed cross-world relationship must be listed in settingDrift and makes passed false.
+- A progression genre must visibly deliver its progression loop and rewards across the outline. An academy genre must visibly use student life, training, tests, rivalries, missions or equivalent genre-defining scenes.
+- Political, social, philosophical or abstract themes are genre drift when they become the main conflict or resolution without being requested by the selected tag.
+- Missing required genre DNA or allowing another genre to dominate must fail the audit even when originality is high.
 - Be strict and evidence-based. Do not pass merely because wording changed.`
 
-  const user = `ABSTRACT ESSENCE ALLOWED:
+const user = `ABSTRACT ESSENCE ALLOWED:
 ${profile.essence.join('\n')}
+
+WORLD / ERA CORE THAT MUST NOT DRIFT:
+${profile.settingEraCore?.join('\n') || '(not extracted; infer only explicit world and era constraints from the source fingerprints)'}
 
 SOURCE FINGERPRINTS FORBIDDEN:
 Names: ${profile.forbiddenNames.join(' | ')}
@@ -581,6 +781,8 @@ Settings: ${profile.forbiddenSettings.join(' | ')}
 Objects: ${profile.forbiddenObjects.join(' | ')}
 Plot beats: ${profile.forbiddenPlotBeats.join(' | ')}
 Twists/endings: ${profile.forbiddenTwists.join(' | ')}
+
+${genreContract}
 
 PROPOSED NEW OUTLINE:
 ${JSON.stringify(outline)}`
@@ -597,12 +799,34 @@ export function normalizeOriginalityReport(
   const hardViolations = Array.from(new Set([...(report.hardViolations || []), ...reusedFingerprints]))
   const softSimilarities = Array.from(new Set([...(report.softSimilarities || []), ...report.similarPlotBeats]))
   const plotSimilarity = typeof report.plotSimilarity === 'number' ? Math.max(0, Math.min(100, report.plotSimilarity)) : undefined
-  const corePass =
+  const genreFidelityScore = typeof report.genreFidelityScore === 'number'
+    ? Math.max(0, Math.min(100, Math.round(report.genreFidelityScore)))
+    : 0
+  const genreEvidence = Array.from(new Set(report.genreEvidence || []))
+  const missingGenreElements = Array.from(new Set(report.missingGenreElements || []))
+  const genreDrift = Array.from(new Set(report.genreDrift || []))
+  const settingFidelityScore = typeof report.settingFidelityScore === 'number'
+    ? Math.max(0, Math.min(100, Math.round(report.settingFidelityScore)))
+    : 0
+  const settingDrift = Array.from(new Set(report.settingDrift || []))
+  const originalitySafe =
     report.score >= rule.minScore &&
     report.changedAxes.length >= rule.minChangedAxes &&
     hardViolations.length === 0 &&
     report.sameTwistOrEnding === false &&
     (plotSimilarity === undefined || plotSimilarity <= rule.plotSimilarityLimit)
+  const genreSafe =
+    genreFidelityScore >= 85 &&
+    missingGenreElements.length === 0 &&
+    genreDrift.length === 0
+  const settingSafe = settingFidelityScore >= 90 && settingDrift.length === 0
+  const corePass = originalitySafe && genreSafe && settingSafe
+  const originalityUsable =
+    report.score >= Math.max(0, rule.minScore - 8) &&
+    report.changedAxes.length >= Math.max(1, rule.minChangedAxes - 1) &&
+    hardViolations.length === 0 &&
+    report.sameTwistOrEnding === false &&
+    (plotSimilarity === undefined || plotSimilarity <= rule.plotSimilarityLimit + 10)
   return {
     ...report,
     score: Math.max(0, Math.min(100, Math.round(report.score || 0))),
@@ -610,13 +834,14 @@ export function normalizeOriginalityReport(
     hardViolations,
     softSimilarities,
     plotSimilarity,
+    genreFidelityScore,
+    genreEvidence,
+    missingGenreElements,
+    genreDrift,
+    settingFidelityScore,
+    settingDrift,
     passed: corePass,
-    usableWithWarning: !corePass &&
-      report.score >= Math.max(0, rule.minScore - 8) &&
-      report.changedAxes.length >= Math.max(1, rule.minChangedAxes - 1) &&
-      hardViolations.length === 0 &&
-      report.sameTwistOrEnding === false &&
-      (plotSimilarity === undefined || plotSimilarity <= rule.plotSimilarityLimit + 10)
+    usableWithWarning: !corePass && originalityUsable && settingSafe
   }
 }
 
@@ -640,9 +865,11 @@ export function buildChapterChunkPrompt(
     customStyle?: string
     customLanguage?: string
     enableHook?: boolean
+    inspirationProfile?: InspirationProfile | null
   }
 ): { system: string; user: string } {
   const stylePrompt = resolveStylePrompt(style, opts.customStyle)
+  const genreFidelity = buildGenreFidelityContract(style, opts.customStyle, opts.inspirationProfile)
   const langVoice = resolveLanguageVoice(language, opts.customLanguage)
   const chapter = outline.chapters[chapterIndex]
   const isFirstChunk = opts.chunkIndex === 0
@@ -688,11 +915,16 @@ ${targetLanguageRules(language, opts.customLanguage)}
 
 ${GENRE_COMMITMENT_RULES}
 
+${genreFidelity}
+
 ${SETTING_FIDELITY_RULES}
+${CROSS_WORLD_ERA_RULES}
 
 ${openingStrategyRules(enableHook)}
 
 ${NATIVE_VOICE_RULES}
+${STORY_VIDEO_RULES}
+${DIRECT_SERIALIZED_SCRIPT_RULES}
 
 Chapter ${chapter.chapter}/${outline.chapters.length}: "${chapter.title}"
 Chapter plot: ${chapter.summary}
@@ -862,8 +1094,11 @@ Rules:
 ${GENRE_COMMITMENT_RULES}
 
 ${SETTING_FIDELITY_RULES}
+${CROSS_WORLD_ERA_RULES}
 
-${NATIVE_VOICE_RULES}${authorNotesBlock(storyNotes)}`
+${NATIVE_VOICE_RULES}
+${STORY_VIDEO_RULES}
+${DIRECT_SERIALIZED_SCRIPT_RULES}${authorNotesBlock(storyNotes)}`
 
   let qaSection = ''
   if (qaList.length > 0) {

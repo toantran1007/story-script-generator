@@ -30,6 +30,7 @@ import {
   buildLanguageRepairPrompt,
   buildInspirationProfilePrompt,
   buildOriginalityAuditPrompt,
+  buildPostStoryHookPrompt,
   normalizeOriginalityReport,
   getStrongerTransformationLevel,
   originalityCandidateRank
@@ -69,14 +70,30 @@ function strings(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : []
 }
 
-function parseInspirationProfile(text: string): InspirationProfile | null {
-  const value = safeParseJSON<Partial<InspirationProfile>>(text)
+function legacySettingEraCore(value: Partial<InspirationProfile>): string[] {
+  const explicit = strings(value.settingEraCore)
+  if (explicit.length > 0) return explicit
+  const settingHints = /(?:world|era|period|contemporary|modern|present|historical|ancient|medieval|future|apocalypse|zombie|two worlds|cross.world|thoi|hien dai|duong dai|co dai|trung co|tuong lai|mat the|tang thi|hai the gioi|xuyen khong)/i
+  return strings(value.forbiddenSettings).filter((item) => {
+    const normalized = item.normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/đ/gi, 'd')
+    return settingHints.test(normalized)
+  }).slice(0, 8)
+}
+
+function normalizeInspirationProfile(value: Partial<InspirationProfile> | null | undefined): InspirationProfile | null {
   if (!value || typeof value.creativeBrief !== 'string' || !value.creativeBrief.trim()) return null
   const sourceTypes = ['short-idea', 'summary', 'outline', 'full-story'] as const
   return {
     sourceType: sourceTypes.includes(value.sourceType as typeof sourceTypes[number])
       ? value.sourceType as InspirationProfile['sourceType']
       : 'short-idea',
+    sourceGenreTags: strings(value.sourceGenreTags),
+    genreCore: strings(value.genreCore),
+    settingEraCore: legacySettingEraCore(value),
+    storyCore: strings(value.storyCore),
+    progressionCore: strings(value.progressionCore),
+    audiencePromise: strings(value.audiencePromise),
+    avoidGenreDrift: strings(value.avoidGenreDrift),
     essence: strings(value.essence),
     expansionOpportunities: strings(value.expansionOpportunities),
     requiredElements: strings(value.requiredElements),
@@ -87,6 +104,10 @@ function parseInspirationProfile(text: string): InspirationProfile | null {
     forbiddenTwists: strings(value.forbiddenTwists),
     creativeBrief: value.creativeBrief.trim()
   }
+}
+
+function parseInspirationProfile(text: string): InspirationProfile | null {
+  return normalizeInspirationProfile(safeParseJSON<Partial<InspirationProfile>>(text))
 }
 
 function parseOriginalityReport(text: string, attempt: number): OriginalityReport | null {
@@ -103,7 +124,14 @@ function parseOriginalityReport(text: string, attempt: number): OriginalityRepor
     feedback: strings(value.feedback),
     hardViolations: strings(value.hardViolations),
     softSimilarities: strings(value.softSimilarities),
-    plotSimilarity: typeof value.plotSimilarity === 'number' ? value.plotSimilarity : undefined
+    plotSimilarity: typeof value.plotSimilarity === 'number' ? value.plotSimilarity : undefined,
+    genreFidelityScore: typeof value.genreFidelityScore === 'number' ? value.genreFidelityScore : undefined,
+    genreEvidence: strings(value.genreEvidence),
+    missingGenreElements: strings(value.missingGenreElements),
+    genreDrift: strings(value.genreDrift),
+    settingFidelityScore: typeof value.settingFidelityScore === 'number' ? value.settingFidelityScore : undefined,
+    settingEvidence: strings(value.settingEvidence),
+    settingDrift: strings(value.settingDrift)
   }
 }
 
@@ -142,7 +170,7 @@ export interface WizardRuntime {
   lastFailedChunk: number
   writtenChapters: number
   totalChapters: number
-  lastAction: 'generateQuestions' | 'generateOutline' | 'confirmAndWrite' | null
+  lastAction: 'generateQuestions' | 'generateOutline' | 'confirmAndWrite' | 'generateHook' | null
 }
 
 function defaultRuntime(): WizardRuntime {
@@ -224,6 +252,7 @@ interface AppState {
   continueWriting: () => Promise<void>
   stopGeneration: () => void
   retryLastAction: () => Promise<void>
+  regenerateHook: () => Promise<void>
   exportProject: (id: string, format: string) => Promise<void>
 
   // Custom presets
@@ -388,13 +417,14 @@ export const useAppStore = create<AppState>((set, get) => {
     enableHook?: boolean
     customStyle?: string
     customLanguage?: string
+    inspirationProfile?: InspirationProfile | null
     startChunkIndex?: number
     userDirection?: string
     storyNotes?: string
   }): Promise<{ text: string; lastSummary: string; charsWritten: number }> {
     const {
       pid, outline, chapterIndex, style, language, previousSummary,
-      targetChars, customStyle, customLanguage, userDirection, storyNotes, enableHook
+      targetChars, customStyle, customLanguage, inspirationProfile, userDirection, storyNotes, enableHook
     } = args
     const startChunkIndex = args.startChunkIndex ?? 0
     const plannedChunks = Math.max(1, Math.ceil(targetChars / CHUNK_CHARS))
@@ -456,7 +486,8 @@ export const useAppStore = create<AppState>((set, get) => {
         userDirection,
         storyNotes,
         customStyle,
-        customLanguage
+        customLanguage,
+        inspirationProfile
       })
 
       try {
@@ -544,6 +575,65 @@ export const useAppStore = create<AppState>((set, get) => {
     return { text: chapterText, lastSummary: chapterText.slice(-500), charsWritten: written }
   }
 
+  // Hook is edited after the complete story exists, so it can quote a real high-impact scene.
+  async function generateHookForProject(pid: string, force = false): Promise<void> {
+    const project = getProjectById(pid)
+    if (!project?.generatedStory.trim() || project.enableHook === false || (!force && project.hookText.trim())) return
+
+    beginTask(pid)
+    updateRuntimeFor(pid, {
+      isGenerating: true,
+      error: null,
+      streamingText: project.generatedStory,
+      generationProgress: 'Đang chọn cảnh ấn tượng để tạo hook...',
+      lastAction: 'generateHook'
+    })
+    addLog(pid, 'info', 'Phân tích full truyện để chọn cảnh làm hook...')
+
+    try {
+      const maxHookSourceChars = 120_000
+      const source = project.generatedStory.length <= maxHookSourceChars
+        ? project.generatedStory
+        : `${project.generatedStory.slice(0, maxHookSourceChars / 2)}\n\n[...phần giữa truyện được rút gọn để giữ giới hạn ngữ cảnh...]\n\n${project.generatedStory.slice(-maxHookSourceChars / 2)}`
+      const prompt = buildPostStoryHookPrompt(
+        source,
+        project.style,
+        project.language,
+        Math.min(4_000, Math.max(800, hookCharsFor(project.language, project.readingSpeed))),
+        project.customStyle,
+        project.customLanguage,
+        project.inspirationProfile
+      )
+      let hook = stripNarrationMarkup(await chat(
+        [{ role: 'system', content: prompt.system }, { role: 'user', content: prompt.user }],
+        { temperature: 0.55 },
+        pid
+      ))
+      if (!hook.trim()) throw new Error('Model trả về hook rỗng')
+      if (hasTargetLanguageLeak(hook, project.language, project.customLanguage)) {
+        const repair = buildLanguageRepairPrompt(hook, project.language, project.customLanguage)
+        hook = stripNarrationMarkup(await chat(
+          [{ role: 'system', content: repair.system }, { role: 'user', content: repair.user }],
+          undefined,
+          pid
+        ))
+      }
+      if (!hook.trim()) throw new Error('Hook sau khi làm sạch bị rỗng')
+
+      updateProjectById(pid, { hookText: hook })
+      addLog(pid, 'success', `Đã tạo hook từ cảnh nổi bật (${hook.length.toLocaleString()} ký tự)`)
+      const saved = getProjectById(pid)
+      if (saved) await window.api.saveProject({ ...saved, updatedAt: new Date().toISOString() })
+    } catch (err) {
+      if (!(err instanceof CancelledError)) {
+        reportFailure(pid, err, 'Tạo hook thất bại')
+      }
+    } finally {
+      clearCancel(pid)
+      updateRuntimeFor(pid, { isGenerating: false, isCancelling: false, streamingText: '' })
+    }
+  }
+
   return {
     currentView: 'dashboard',
     projects: [],
@@ -578,12 +668,13 @@ export const useAppStore = create<AppState>((set, get) => {
           projectType: 'new' as const,
           idea: migratedIdea,
           transformationLevel: project.transformationLevel || 'original' as const,
-          inspirationProfile: project.inspirationProfile || null,
+          inspirationProfile: normalizeInspirationProfile(project.inspirationProfile),
           originalityReport: project.originalityReport || null,
           currentStep: migrateToInput ? 1 : project.currentStep,
           status: migrateToInput ? 'draft' as const : project.status,
           duration: normalizeDuration(project.duration),
-          enableHook: project.enableHook !== false
+          enableHook: project.enableHook !== false,
+          hookText: typeof project.hookText === 'string' ? project.hookText : ''
         })
       })
       const recovered = projects.filter((project, index) => {
@@ -691,19 +782,20 @@ export const useAppStore = create<AppState>((set, get) => {
     setIdea: (v) => updateProject({
       idea: v,
       inspirationProfile: null,
-      originalityReport: null
+      originalityReport: null,
+      hookText: ''
     }),
     setTransformationLevel: (v) => updateProject({
       transformationLevel: v,
       originalityReport: null
     }),
-    setStoryNotes: (v) => updateProject({ storyNotes: v }),
+    setStoryNotes: (v) => updateProject({ storyNotes: v, inspirationProfile: null, originalityReport: null }),
     setAutoFlow: (v) => updateProject({ autoFlow: v }),
-    setEnableHook: (v) => updateProject({ enableHook: v }),
-    setStyle: (v) => updateProject({ style: v }),
-    setCustomStyle: (v) => updateProject({ customStyle: v }),
-    setLanguage: (v) => updateProject({ language: v }),
-    setCustomLanguage: (v) => updateProject({ customLanguage: v }),
+    setEnableHook: (v) => updateProject({ enableHook: v, ...(v ? {} : { hookText: '' }) }),
+    setStyle: (v) => updateProject({ style: v, inspirationProfile: null, originalityReport: null, hookText: '' }),
+    setCustomStyle: (v) => updateProject({ customStyle: v, inspirationProfile: null, originalityReport: null, hookText: '' }),
+    setLanguage: (v) => updateProject({ language: v, hookText: '' }),
+    setCustomLanguage: (v) => updateProject({ customLanguage: v, hookText: '' }),
     setDuration: (v) => updateProject({ duration: normalizeDuration(v) }),
     setReadingSpeed: (v) => updateProject({ readingSpeed: Math.max(0, Math.round(v) || 0) }),
     setMode: (v) => updateProject({ mode: v }),
@@ -756,7 +848,7 @@ export const useAppStore = create<AppState>((set, get) => {
         language: 'vi', customLanguage: '', duration: 30, enableHook: true, readingSpeed: 0, mode: 'guided', autoFlow: false,
         originalScript: '', scriptAnalysis: '', suggestedDirections: [], chosenDirection: '',
         questions: [], answers: {}, outlinePhase: 'idle', outline: null,
-        viSummary: '', userDirection: '', generatedStory: '', outlineSummary: '',
+        viSummary: '', userDirection: '', generatedStory: '', hookText: '', outlineSummary: '',
         status: 'draft', projectType: 'new'
       })
       updateRuntimeFor(pid, defaultRuntime())
@@ -788,10 +880,14 @@ export const useAppStore = create<AppState>((set, get) => {
 
       try {
         let inspirationProfile = p.inspirationProfile
-        if (!inspirationProfile) {
+        if (!inspirationProfile ||
+          inspirationProfile.genreCore.length === 0 ||
+          inspirationProfile.storyCore.length === 0 ||
+          inspirationProfile.progressionCore.length === 0 ||
+          inspirationProfile.audiencePromise.length === 0) {
           updateRuntimeFor(pid, { generationProgress: 'Đang chắt lọc điểm đặc sắc từ nguồn...' })
           addLog(pid, 'info', 'Phân tích nguồn tham khảo thành hồ sơ cảm hứng trừu tượng...')
-          const profilePrompt = buildInspirationProfilePrompt(p.idea, p.storyNotes)
+          const profilePrompt = buildInspirationProfilePrompt(p.idea, p.storyNotes, p.style, p.customStyle)
           const profileResp = await chat(
             [
               { role: 'system', content: profilePrompt.system },
@@ -913,7 +1009,8 @@ export const useAppStore = create<AppState>((set, get) => {
 
           const outlinePrompt = buildOutlinePrompt(
             p.idea, p.style, p.language, p.duration, qaList, existingOutlines,
-            p.customStyle, p.customLanguage, p.storyNotes, p.enableHook !== false,
+            // Outline and chapter writing stay chronologically coherent; hook is edited after full story completion.
+            p.customStyle, p.customLanguage, p.storyNotes, false,
             profile, transformationLevel, originalityFeedback
           )
           const outlineResp = await chat(
@@ -945,7 +1042,7 @@ export const useAppStore = create<AppState>((set, get) => {
             addLog(pid, 'success', 'Đã sửa ngôn ngữ dàn ý')
           }
 
-          const auditPrompt = buildOriginalityAuditPrompt(candidate, profile, transformationLevel, attempt)
+          const auditPrompt = buildOriginalityAuditPrompt(candidate, profile, transformationLevel, attempt, p.style, p.customStyle)
           const auditResp = await chat(
             [{ role: 'system', content: auditPrompt.system }, { role: 'user', content: auditPrompt.user }],
             { temperature: 0.1 },
@@ -971,9 +1068,15 @@ export const useAppStore = create<AppState>((set, get) => {
             break
           }
 
-          originalityFeedback = report.feedback.length
-            ? report.feedback
-            : [...report.reusedFingerprints, ...report.similarPlotBeats]
+          originalityFeedback = [
+            ...report.feedback,
+            ...(report.missingGenreElements || []).map((item) => `Restore missing genre core: ${item}`),
+            ...(report.genreDrift || []).map((item) => `Remove genre drift: ${item}`),
+            ...(report.settingDrift || []).map((item) => `Restore setting and era fidelity: ${item}`)
+          ]
+          if (originalityFeedback.length === 0) {
+            originalityFeedback = [...report.reusedFingerprints, ...report.similarPlotBeats]
+          }
           if (attempt === 2) {
             originalityFeedback = [
               'FINAL ATTEMPT: keep the independent parts that already passed, but surgically replace every concrete violation and similar event chain listed below.',
@@ -984,8 +1087,17 @@ export const useAppStore = create<AppState>((set, get) => {
           addLog(
             pid,
             'warn',
-            `Dàn ý chưa đủ khác biệt (${report.score}/100) — sẽ tạo lại`,
-            `Trục đã đổi: ${report.changedAxes.length} · Dấu vân tay: ${report.reusedFingerprints.join(' | ') || '(không rõ)'} · Nhịp sự kiện: ${report.similarPlotBeats.join(' | ') || '(không rõ)'} · Gợi ý: ${report.feedback.join(' | ') || '(không có)'}`
+            `Dàn ý chưa đạt (${report.score}/100, thể loại ${report.genreFidelityScore ?? 0}/100) — sẽ tạo lại`,
+            `Trục đã đổi: ${report.changedAxes.length} · Thiếu lõi: ${report.missingGenreElements?.join(' | ') || '(không)'} · Lệch thể loại: ${report.genreDrift?.join(' | ') || '(không)'} · Dấu vân tay: ${report.reusedFingerprints.join(' | ') || '(không rõ)'} · Gợi ý: ${originalityFeedback.join(' | ') || '(không có)'}`
+          )
+        }
+
+        if (bestReport?.settingDrift?.length) {
+          addLog(
+            pid,
+            'error',
+            'Outline rejected for world or era drift',
+            `Setting fidelity: ${bestReport.settingFidelityScore ?? 0}/100 | ${bestReport.settingDrift.join(' | ')}`
           )
         }
 
@@ -997,7 +1109,7 @@ export const useAppStore = create<AppState>((set, get) => {
             pid,
             'warn',
             `Dàn ý dùng bản tốt nhất với cảnh báo (${bestReport.score}/100)`,
-            `Còn ${bestReport.softSimilarities?.length || bestReport.similarPlotBeats.length} điểm tương đồng chung; không có vi phạm cụ thể.`
+            `Độ đúng thể loại: ${bestReport.genreFidelityScore ?? 0}/100 · Thiếu lõi: ${bestReport.missingGenreElements?.join(' | ') || '(không)'} · Lệch thể loại: ${bestReport.genreDrift?.join(' | ') || '(không)'}. Bản này vẫn an toàn về độ độc lập.`
           )
         }
 
@@ -1034,11 +1146,12 @@ export const useAppStore = create<AppState>((set, get) => {
         // chuỗi bám theo pid đã khởi chạy, dự án khác không bị ảnh hưởng.
         const projNow = getProjectById(pid)
         if (projNow?.autoFlow && !isCancelled(pid)) {
-          if (originalityReport?.usableWithWarning) {
-            addLog(pid, 'warn', 'Tự động xuyên suốt tạm dừng để bạn duyệt bản tốt nhất còn cảnh báo')
-          } else if (dupResult.isDuplicate) {
+          if (dupResult.isDuplicate) {
             addLog(pid, 'warn', 'Tự động xuyên suốt tạm dừng — phát hiện trùng cốt truyện, cần bạn xem lại')
           } else {
+            if (originalityReport?.usableWithWarning) {
+              addLog(pid, 'warn', 'Đã hết 3 lần — tự động dùng bản tốt nhất còn cảnh báo theo cấu hình')
+            }
             addLog(pid, 'info', 'Tự động xuyên suốt — bắt đầu viết ngay...')
             chainedToWrite = true
             updateRuntimeFor(pid, { isGenerating: false })
@@ -1114,7 +1227,7 @@ export const useAppStore = create<AppState>((set, get) => {
         lastFailedChapter: -1, lastFailedChunk: -1
       })
       updateProjectById(pid, {
-        generatedStory: '', outlinePhase: 'writing', status: 'writing',
+        generatedStory: '', hookText: '', outlinePhase: 'writing', status: 'writing',
         writingMemory: memory
       })
       // Hạn mức ký tự tính từ thời lượng + tốc độ đọc (tự khai hoặc mặc định theo ngôn ngữ),
@@ -1140,9 +1253,11 @@ export const useAppStore = create<AppState>((set, get) => {
           const result = await writeChapterChunked({
             pid, outline, chapterIndex: i, style: p.style, language: p.language,
             previousSummary, targetChars: chapterBudgets[i],
-            enableHook: p.enableHook !== false,
-            hookChars: p.enableHook !== false ? hookCharsFor(p.language, p.readingSpeed) : 0,
+            // The hook is selected from the completed story in post-production.
+            enableHook: false,
+            hookChars: 0,
             customStyle: p.customStyle, customLanguage: p.customLanguage,
+            inspirationProfile: p.inspirationProfile,
             userDirection: p.userDirection, storyNotes: p.storyNotes
           })
 
@@ -1170,11 +1285,13 @@ export const useAppStore = create<AppState>((set, get) => {
         }
 
         updateProjectById(pid, {
-          generatedStory: fullStory.trim(), outlinePhase: 'done', status: 'done',
+          generatedStory: fullStory.trim(), hookText: '', outlinePhase: 'done', status: 'done',
           writingMemory: null // Clear memory on completion
         })
         updateRuntimeFor(pid, { generationProgress: 'Hoàn thành!', writtenChapters: outline.chapters.length })
         addLog(pid, 'success', `Hoàn thành toàn bộ! ${fullStory.length.toLocaleString()} ký tự`)
+
+        await generateHookForProject(pid)
 
         const final = getProjectById(pid)
         if (final) await window.api.saveProject({ ...final, updatedAt: new Date().toISOString() })
@@ -1265,9 +1382,10 @@ export const useAppStore = create<AppState>((set, get) => {
             pid, outline, chapterIndex: i, style: p.style, language: p.language,
             previousSummary, targetChars: chapterBudgets[i],
             alreadyWrittenChars: alreadyWritten,
-            enableHook: p.enableHook !== false,
-            hookChars: p.enableHook !== false ? hookCharsFor(p.language, p.readingSpeed) : 0,
+            enableHook: false,
+            hookChars: 0,
             customStyle: p.customStyle, customLanguage: p.customLanguage,
+            inspirationProfile: p.inspirationProfile,
             startChunkIndex: chunkStart, userDirection: p.userDirection,
             storyNotes: p.storyNotes
           })
@@ -1295,7 +1413,7 @@ export const useAppStore = create<AppState>((set, get) => {
         }
 
         updateProjectById(pid, {
-          generatedStory: fullStory.trim(), outlinePhase: 'done', status: 'done',
+          generatedStory: fullStory.trim(), hookText: '', outlinePhase: 'done', status: 'done',
           writingMemory: null
         })
         updateRuntimeFor(pid, {
@@ -1303,6 +1421,8 @@ export const useAppStore = create<AppState>((set, get) => {
           lastFailedChapter: -1, lastFailedChunk: -1
         })
         addLog(pid, 'success', 'Hoàn thành toàn bộ!')
+
+        await generateHookForProject(pid)
 
         const final = getProjectById(pid)
         if (final) await window.api.saveProject({ ...final, updatedAt: new Date().toISOString() })
@@ -1342,8 +1462,15 @@ export const useAppStore = create<AppState>((set, get) => {
         case 'generateQuestions': return get().generateQuestions()
         case 'generateOutline': return get().generateOutline()
         case 'confirmAndWrite': return get().continueWriting()
+        case 'generateHook': return get().regenerateHook()
         default: addLog(pid, 'warn', 'Không có hành động nào để thử lại')
       }
+    },
+
+    regenerateHook: async () => {
+      const pid = get().activeProjectId
+      if (!pid) return
+      await generateHookForProject(pid, true)
     },
 
     exportProject: async (id, format) => {

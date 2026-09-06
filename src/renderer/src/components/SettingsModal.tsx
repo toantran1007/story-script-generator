@@ -11,12 +11,23 @@ import {
 } from '@/types'
 
 const API_PROVIDERS = Object.keys(API_PROVIDER_INFO) as ApiProviderId[]
+const REMOVED_VILAO_MODELS_KEY = 'story-script-generator.removed-vilao-models'
 
 export function SettingsModal(): JSX.Element {
   const { settings, saveSettings, setSettingsOpen } = useAppStore()
 
   const [form, setForm] = useState<AppSettings>(() => normalizeSettings(settings))
   const [models, setModels] = useState<string[]>([])
+  const [discoveredModels, setDiscoveredModels] = useState<string[]>([])
+  const [removedModels, setRemovedModels] = useState<string[]>(() => {
+    try {
+      const stored = window.localStorage.getItem(REMOVED_VILAO_MODELS_KEY)
+      const parsed: unknown = stored ? JSON.parse(stored) : []
+      return Array.isArray(parsed) ? parsed.filter((model): model is string => typeof model === 'string') : []
+    } catch {
+      return []
+    }
+  })
   const [isFetchingModels, setIsFetchingModels] = useState(false)
   const [connectionError, setConnectionError] = useState<string | null>(null)
   const [isSaving, setIsSaving] = useState(false)
@@ -28,8 +39,14 @@ export function SettingsModal(): JSX.Element {
     setForm(normalizeSettings(settings))
   }, [settings])
 
+  useEffect(() => {
+    window.localStorage.setItem(REMOVED_VILAO_MODELS_KEY, JSON.stringify(removedModels))
+  }, [removedModels])
+
   const clearApiStatus = (): void => {
     setModels([])
+    setDiscoveredModels([])
+    setRemovedModels([])
     setConnectionError(null)
     setApiSaved(false)
   }
@@ -42,19 +59,28 @@ export function SettingsModal(): JSX.Element {
 
     const result = await testConnection(candidate)
     if (result.success && result.models) {
-      setModels(result.models)
-      const currentModelIsAvailable = result.models.includes(candidate.model)
-      const shouldSelectFirstLlm = result.models.length > 0 &&
-        (!candidate.model || (candidate.apiProvider === 'vilao' && !currentModelIsAvailable))
+      // Keep a persisted/manual model visible even when the provider catalog is stale.
+      const discovered = result.models
+      setDiscoveredModels(discovered)
+      const shouldHideRemoved = candidate.apiProvider === 'vilao'
+      const visibleDiscovered = shouldHideRemoved
+        ? discovered.filter((model) => !removedModels.includes(model))
+        : discovered
+      const modelsWithCurrent = candidate.model && !discovered.includes(candidate.model) &&
+        !(shouldHideRemoved && removedModels.includes(candidate.model))
+        ? [candidate.model, ...visibleDiscovered]
+        : visibleDiscovered
+      setModels(modelsWithCurrent)
+      const shouldSelectFirstLlm = discovered.length > 0 && !candidate.model
       if (shouldSelectFirstLlm) {
-        setForm((current) => normalizeSettings({ ...current, model: result.models![0] }))
+        setForm((current) => normalizeSettings({ ...current, model: discovered[0] }))
       }
     } else {
       setModels([])
       setConnectionError(result.error || 'Không thể kết nối tới API')
     }
     setIsFetchingModels(false)
-  }, [])
+  }, [removedModels])
 
   useEffect(() => {
     const initial = normalizeSettings(settings)
@@ -69,6 +95,7 @@ export function SettingsModal(): JSX.Element {
       clearApiStatus()
     } else if (field === 'model') {
       setApiSaved(false)
+      setRemovedModels((current) => current.filter((model) => model !== String(value).trim()))
     }
   }
 
@@ -86,6 +113,17 @@ export function SettingsModal(): JSX.Element {
 
   const handleRefreshModels = (): void => {
     void fetchModels(normalizedForm())
+  }
+
+  const handleRemoveStaleModel = (): void => {
+    const modelToRemove = form.model.trim()
+    if (form.apiProvider !== 'vilao' || !modelToRemove || discoveredModels.includes(modelToRemove)) return
+
+    setRemovedModels((current) => current.includes(modelToRemove) ? current : [...current, modelToRemove])
+    setModels((current) => current.filter((model) => model !== modelToRemove))
+    const fallbackModel = discoveredModels.find((model) => !removedModels.includes(model) && model !== modelToRemove) || ''
+    setForm((current) => normalizeSettings({ ...current, model: fallbackModel }))
+    setApiSaved(false)
   }
 
   const handleSaveApi = async (): Promise<void> => {
@@ -185,28 +223,68 @@ export function SettingsModal(): JSX.Element {
                 <span>Đang tải danh sách mô hình...</span>
               </div>
             ) : models.length > 0 ? (
-              <select
-                className="form-select"
-                value={form.model}
-                onChange={(event) => handleChange('model', event.target.value)}
-              >
-                <option value="">— Chọn mô hình —</option>
-                {models.map((model) => (
-                  <option key={model} value={model}>{model}</option>
-                ))}
-              </select>
+              <div className="api-model-picker api-model-picker--stacked">
+                <select
+                  className="form-select"
+                  value={models.includes(form.model) ? form.model : ''}
+                  onChange={(event) => handleChange('model', event.target.value)}
+                >
+                  <option value="">— Chọn model từ API —</option>
+                  {models.map((model) => (
+                    <option key={model} value={model}>{model}</option>
+                  ))}
+                </select>
+                <input
+                  className="form-input"
+                  value={form.model}
+                  onChange={(event) => handleChange('model', event.target.value)}
+                  placeholder="Hoặc nhập model thủ công, ví dụ aaa/gpt-5.6-sol"
+                />
+                <button
+                  type="button"
+                  className="btn btn--secondary btn--sm api-model-refresh"
+                  onClick={handleRefreshModels}
+                  disabled={!form.apiBaseUrl || !form.apiKey || isFetchingModels}
+                  title="Tải lại toàn bộ model LLM từ Vilao"
+                >
+                  {isFetchingModels ? 'Đang tải...' : '↻ Làm mới model'}
+                </button>
+              </div>
             ) : (
-              <input
-                className="form-input"
-                value={form.model}
-                onChange={(event) => handleChange('model', event.target.value)}
-                placeholder={modelPlaceholder}
-              />
+              <div className="api-model-picker">
+                <input
+                  className="form-input"
+                  value={form.model}
+                  onChange={(event) => handleChange('model', event.target.value)}
+                  placeholder={modelPlaceholder}
+                />
+                <button
+                  type="button"
+                  className="btn btn--secondary btn--sm api-model-refresh"
+                  onClick={handleRefreshModels}
+                  disabled={!form.apiBaseUrl || !form.apiKey || isFetchingModels}
+                  title="Tải danh sách model LLM"
+                >
+                  {isFetchingModels ? 'Đang tải...' : '↻ Làm mới model'}
+                </button>
+              </div>
             )}
 
             {models.length > 0 && !isFetchingModels && (
               <div className="connection-status connection-status--success api-connection-message">
                 ✓ Đã kết nối · {models.length} mô hình
+              </div>
+            )}
+            {form.apiProvider === 'vilao' && form.model.trim() && !discoveredModels.includes(form.model.trim()) && !isFetchingModels && (
+              <div className="api-stale-model-warning">
+                <span>Model này không còn trong danh sách Vilao.</span>
+                <button
+                  type="button"
+                  className="btn btn--ghost btn--sm"
+                  onClick={handleRemoveStaleModel}
+                >
+                  Xóa khỏi tool
+                </button>
               </div>
             )}
             {connectionError && (

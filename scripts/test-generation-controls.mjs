@@ -28,10 +28,12 @@ const wizardStep1 = fs.readFileSync('src/renderer/src/components/WizardStep1.tsx
 const createDialog = fs.readFileSync('src/renderer/src/components/CreateProjectDialog.tsx', 'utf8')
 const wizardStep2 = fs.readFileSync('src/renderer/src/components/WizardStep2.tsx', 'utf8')
 const wizardStep3 = fs.readFileSync('src/renderer/src/components/WizardStep3.tsx', 'utf8')
+const settingsModal = fs.readFileSync('src/renderer/src/components/SettingsModal.tsx', 'utf8')
 const appCss = fs.readFileSync('src/renderer/src/App.css', 'utf8')
 const storyStore = fs.readFileSync('src/renderer/src/stores/storyStore.ts', 'utf8')
 
 assert(types.createEmptyProject('id', 'name').enableHook === true, 'new projects enable hooks')
+assert(types.createEmptyProject('id', 'name').hookText === '', 'new projects start without a post-production hook')
 const staleProject = {
   ...types.createEmptyProject('stale', 'Stale'),
   currentStep: 3,
@@ -72,22 +74,41 @@ assert(!wizardStep3.includes('p.viSummary'), 'outline review no longer renders t
 assert(storyStore.includes('viSummary: outline.outlineSummary'), 'legacy summary field reuses the existing outline summary without an API call')
 assert(appCss.includes('max-width: 1120px'), 'wizard uses the available width between both window edges')
 assert(appCss.includes('grid-template-columns: minmax(0, 1.15fr)'), 'generation placeholders share horizontal space')
+assert(settingsModal.includes('api-model-refresh'), 'settings expose a dedicated model refresh button')
+assert(settingsModal.includes('api-model-picker--stacked'), 'settings allow manual full model ids alongside discovered models')
+assert(settingsModal.includes('modelsWithCurrent'), 'settings preserve a manually configured model when the catalog is stale')
+assert(settingsModal.includes('handleRemoveStaleModel'), 'settings can remove a stale Vilao model')
+assert(settingsModal.includes('REMOVED_VILAO_MODELS_KEY'), 'stale Vilao model removals are persisted locally')
 
 const profilePrompt = prompts.buildInspirationProfilePrompt('Một người gác đèn phát hiện bí mật trong ngọn hải đăng.')
 assert(profilePrompt.system.includes('inspiration analyst, not a rewriter'), 'source is analyzed instead of rewritten')
 assert(profilePrompt.system.includes('forbiddenNames'), 'inspiration profile extracts forbidden names')
+assert(profilePrompt.system.includes('genreCore'), 'inspiration profile extracts genre core separately')
+assert(profilePrompt.system.includes('settingEraCore'), 'inspiration profile extracts world and era constraints')
+assert(profilePrompt.system.includes('selected genre has priority'), 'selected genre takes priority over source genre')
+assert(profilePrompt.system.includes('NOT forbidden plot beats'), 'genre conventions are not misclassified as copied plot beats')
+assert(profilePrompt.system.includes('weak student'), 'generic genre progression is excluded from forbidden beats')
 const profileAwareQuestions = prompts.buildQuestionsPrompt('SOURCE SHOULD NOT BE FORWARDED', 'dramatic', 'vi', 17, '', '', '', {
   sourceType: 'summary', essence: ['bí mật gia đình'], expansionOpportunities: [], requiredElements: [],
+  sourceGenreTags: ['political drama'], genreCore: ['family mystery'], storyCore: ['a hidden truth'],
+  settingEraCore: ['present-day city; no future technology'],
+  progressionCore: ['clues reveal the truth'], audiencePromise: ['concrete discoveries'], avoidGenreDrift: ['political debate'],
   forbiddenNames: ['Mali'], forbiddenSettings: [], forbiddenObjects: [], forbiddenPlotBeats: [], forbiddenTwists: [],
   creativeBrief: 'Một người yếu thế phải lựa chọn giữa sự thật và an toàn.'
 })
 assert(!profileAwareQuestions.user.includes('SOURCE SHOULD NOT BE FORWARDED'), 'downstream prompts do not forward raw source text')
+assert(profileAwareQuestions.system.includes('GENRE FIDELITY CONTRACT'), 'questions enforce selected genre fidelity')
+assert(profileAwareQuestions.system.includes('explicit world, era, technology level'), 'explicit idea setting constraints override generic style labels')
+assert(profileAwareQuestions.system.includes('For isekai, reincarnation, regression'), 'common isekai and reincarnation grammar is preserved generically')
 assert(prompts.getTransformationRule('develop').minChangedAxes === 5, 'develop level changes at least five axes')
 assert(prompts.getTransformationRule('original').minChangedAxes === 7, 'original level changes at least seven axes')
 assert(prompts.getTransformationRule('reborn').minChangedAxes === 9, 'reborn level changes at least nine axes')
 
 const profile = {
   sourceType: 'summary', essence: ['bí mật gia đình'], expansionOpportunities: [], requiredElements: [],
+  sourceGenreTags: ['political drama'], genreCore: ['family mystery'], storyCore: ['a hidden truth'],
+  settingEraCore: ['present-day city; no future technology'],
+  progressionCore: ['clues reveal the truth'], audiencePromise: ['concrete discoveries'], avoidGenreDrift: ['political debate'],
   forbiddenNames: ['Mali'], forbiddenSettings: ['Ayutthaya'], forbiddenObjects: ['chiếc vòng'],
   forbiddenPlotBeats: ['tìm thấy chiếc vòng trong đền'], forbiddenTwists: ['người cha là thủ phạm'],
   creativeBrief: 'Một người yếu thế phải lựa chọn giữa sự thật và an toàn.'
@@ -100,6 +121,10 @@ assert(prompts.getStrongerTransformationLevel('develop') === 'original', 'strong
 assert(prompts.getStrongerTransformationLevel('original') === 'reborn', 'stronger retry raises original to reborn')
 assert(prompts.buildOriginalityAuditPrompt(freshOutline, profile, 'original', 3).system.includes('hardViolations'), 'originality audit distinguishes hard violations')
 assert(prompts.buildOriginalityAuditPrompt(freshOutline, profile, 'original', 3).system.includes('softSimilarities'), 'originality audit distinguishes soft similarities')
+assert(prompts.buildOriginalityAuditPrompt(freshOutline, profile, 'original', 3).system.includes('settingFidelityScore'), 'originality audit checks setting and era fidelity')
+assert(prompts.buildOriginalityAuditPrompt(freshOutline, profile, 'original', 3, 'custom', 'anime fantasy academy level-up').user.includes('GENRE FIDELITY CONTRACT'), 'originality audit receives selected genre contract')
+assert(prompts.buildOriginalityAuditPrompt(freshOutline, profile, 'original', 3, 'custom', 'anime fantasy academy level-up').system.includes('reusable genre grammar'), 'audit allows required genre conventions while checking their implementation')
+assert(prompts.buildOriginalityAuditPrompt(freshOutline, profile, 'original', 3, 'custom', 'anime fantasy academy level-up').system.includes('at least two distinctive'), 'audit requires distinctive evidence before blocking shared genre grammar')
 assert(originality.findForbiddenFingerprints(freshOutline, profile).length === 0, 'originality check accepts new concrete fingerprints')
 const copiedOutline = { ...freshOutline, outlineSummary: 'Mali tìm thấy chiếc vòng trong Ayutthaya.' }
 assert(originality.findForbiddenFingerprints(copiedOutline, profile).length === 3, 'originality check catches reused names, settings and objects')
@@ -113,6 +138,33 @@ assert(!apiService.isLlmModel({ id: 'veo-3.1-fast' }, 'vilao'), 'Vilao video mod
 assert(!apiService.isLlmModel({ id: 'text-embedding-3-large' }, 'vilao'), 'Embedding model is excluded')
 assert(apiService.isLlmModel({ id: 'custom-chat-model' }, 'custom'), 'Custom chat model remains available')
 assert(apiService.formatModelId({ id: 'gemini-3.7-flash-high', provider_prefix: 'anxs' }, 'vilao') === 'anxs/gemini-3.7-flash-high', 'Vilao model prefix is preserved from API metadata')
+assert(apiService.extractModelIds({ data: [
+  { model_id: 'gpt-5.6-sol', model_type: 'text', provider_prefix: 'cd' },
+  { id: 'gemini-3.7-flash-high', type: 'text', provider_prefix: 'anxs' },
+  { model_id: 'wan2.7-image', model_type: 'image', provider_prefix: 'alic' }
+] }, 'vilao').join('|') === 'cd/gpt-5.6-sol|anxs/gemini-3.7-flash-high', 'Vilao model list keeps all text models and excludes media models')
+assert(apiService.extractModelIds({ models: {
+  first: { id: 'cd/gpt-5.6-sol', type: 'text' },
+  second: { model_id: 'anxs/gemini-3.7-flash-high', model_type: 'text' }
+} }, 'vilao').length === 2, 'model list parser supports object envelopes')
+assert(apiService.extractModelIds([
+  { id: 'gpt-5.6-sol', model_type: 'text', provider_prefix: 'cd' },
+  { id: 'gpt-5.6-sol', model_type: 'text', provider_prefix: 'cd' }
+], 'vilao').length === 1, 'model list parser supports root arrays and deduplicates models')
+assert(apiService.extractModelIds({ data: { models: [
+  { model: 'gpt-5.6-sol', type: 'text' },
+  { name: 'wan2.7-image', type: 'image' }
+] } }, 'vilao').join('|') === 'cd/gpt-5.6-sol', 'model list parser supports nested model/name records')
+assert(apiService.extractModelIds({ data: [
+  { id: 'wan2.7-image', model_type: 'image' },
+  { id: 'veo-3.1-fast', model_type: 'video' },
+  { id: 'gpt-5.6-sol', model_type: 'text', provider_prefix: 'cd' },
+  { id: 'gemini-3.7-flash-high', model_type: 'text', provider_prefix: 'ram' }
+] }, 'vilao').join('|') === 'cd/gpt-5.6-sol|ram/gemini-3.7-flash-high', 'current Vilao mixed catalog exposes every LLM model')
+assert(apiService.extractModelIds({ data: [
+  { id: 'gpt-5.6-sol', model_type: 'text', owned_by: 'cd' },
+  { id: 'gpt-5.6-sol', model_type: 'text', owned_by: 'aaa' }
+] }, 'vilao').join('|') === 'cd/gpt-5.6-sol|aaa/gpt-5.6-sol', 'same Vilao model name keeps distinct provider prefixes')
 assert(types.normalizeVilaoModelId('gpt-5.6-sol') === 'cd/gpt-5.6-sol', 'Legacy Vilao model aliases are upgraded with provider prefix')
 assert(types.normalizeVilaoModelId('anxs/gemini-3.7-flash-high') === 'anxs/gemini-3.7-flash-high', 'Fully qualified Vilao model IDs are unchanged')
 
@@ -122,6 +174,13 @@ const softSimilarityReport = prompts.normalizeOriginalityReport({
   reusedFingerprints: [],
   similarPlotBeats: ['A vulnerable protagonist protects family while confronting a growing threat.'],
   sameTwistOrEnding: false,
+  genreFidelityScore: 94,
+  genreEvidence: ['The family mystery drives every chapter.'],
+  missingGenreElements: [],
+  genreDrift: [],
+  settingFidelityScore: 96,
+  settingEvidence: ['Present-day city remains grounded in current technology.'],
+  settingDrift: [],
   feedback: []
 }, 'original', [])
 assert(softSimilarityReport.passed === true, 'common thematic similarities do not fail an otherwise independent outline')
@@ -133,10 +192,37 @@ const hardViolationReport = prompts.normalizeOriginalityReport({
   similarPlotBeats: [],
   hardViolations: ['Copied signature object'],
   sameTwistOrEnding: false,
+  genreFidelityScore: 96,
+  genreEvidence: ['The selected genre drives the outline.'],
+  missingGenreElements: [],
+  genreDrift: [],
+  settingFidelityScore: 96,
+  settingEvidence: ['Present-day city remains grounded in current technology.'],
+  settingDrift: [],
   feedback: []
 }, 'original', [])
 assert(hardViolationReport.passed === false, 'explicit hard originality violations still fail the outline')
 assert(hardViolationReport.hardViolations?.length === 1, 'hard originality violations are preserved for user feedback')
+
+const genreDriftReport = prompts.normalizeOriginalityReport({
+  passed: true, score: 95, attempt: 3,
+  changedAxes: ['setting', 'protagonist', 'conflict', 'mechanics', 'inciting event', 'antagonist', 'ending'],
+  reusedFingerprints: [], similarPlotBeats: [], sameTwistOrEnding: false,
+  genreFidelityScore: 54, genreEvidence: ['One level-up scene'],
+  missingGenreElements: ['academy training and exams'], genreDrift: ['political reform dominates the ending'],
+  settingFidelityScore: 96, settingEvidence: ['The required world and era remain intact.'], settingDrift: [], feedback: []
+}, 'original', [])
+assert(genreDriftReport.passed === false, 'genre drift fails an otherwise original outline')
+assert(genreDriftReport.usableWithWarning === true, 'best originality-safe outline remains usable after retry limit')
+const settingDriftReport = prompts.normalizeOriginalityReport({
+  passed: true, score: 99, attempt: 3,
+  changedAxes: ['protagonist', 'occupation', 'goal', 'geography', 'conflict', 'relationships', 'mechanics', 'reveal', 'ending'],
+  reusedFingerprints: [], similarPlotBeats: [], sameTwistOrEnding: false,
+  genreFidelityScore: 96, genreEvidence: ['Commerce remains central.'], missingGenreElements: [], genreDrift: [],
+  settingFidelityScore: 40, settingEvidence: [], settingDrift: ['Contemporary world replaced by a futuristic city.'], feedback: []
+}, 'original', [])
+assert(settingDriftReport.passed === false, 'future setting drift fails the outline')
+assert(settingDriftReport.usableWithWarning === false, 'setting drift cannot use the best outline fallback')
 
 const outlineArgs = ['A baker discovers a hidden room', 'dramatic', 'en', 17, [], []]
 const hookOutline = prompts.buildOutlinePrompt(...outlineArgs, '', '', '', true)
@@ -178,6 +264,9 @@ const naturalChunk = prompts.buildChapterChunkPrompt(outline, 0, 'dramatic', 'en
 })
 assert(hookChunk.system.includes('AUDIENCE HOOK'), 'chapter prompt includes hook execution')
 assert(hookChunk.system.includes('OUTLINE FIDELITY'), 'chapter prompt protects fixed outline facts')
+assert(hookChunk.system.includes('STORY VIDEO VISUAL RULES'), 'chapter prompt writes visual story-video beats')
+assert(hookChunk.system.includes('DIRECT SERIALIZED SCRIPT STYLE'), 'chapter prompt uses direct serialized script style')
+assert(hookChunk.system.includes('visible system panel'), 'chapter prompt localizes on-screen system text')
 assert(!naturalChunk.system.includes('AUDIENCE HOOK'), 'chapter prompt excludes hook execution')
 assert(
   naturalChunk.user.includes('without an audience hook'),
@@ -206,6 +295,13 @@ const styleBuilders = [
 for (const [name, prompt] of styleBuilders) {
   assert(prompt.system.includes('hài hước'), `humorous style reaches ${name} prompt`)
 }
+assert(prompts.buildOutlinePrompt('idea', 'dramatic', 'vi', 17, [], []).system.includes('STORY VIDEO VISUAL RULES'), 'outline prompt plans visual story-video beats')
+assert(prompts.buildOutlinePrompt('idea', 'dramatic', 'vi', 17, [], []).system.includes('DIRECT SERIALIZED SCRIPT STYLE'), 'outline prompt plans direct serialized prose')
+const postStoryHook = prompts.buildPostStoryHookPrompt('A completed story scene with a real consequence.', 'dramatic', 'en', 1200)
+assert(postStoryHook.system.includes('completed script'), 'post-production hook reads the completed script')
+assert(postStoryHook.system.includes('Never invent a new scene'), 'post-production hook cannot invent disconnected events')
+assert(postStoryHook.system.includes('Do not reveal the final resolution'), 'post-production hook protects the ending')
+assert(postStoryHook.system.includes('DIRECT SERIALIZED SCRIPT STYLE'), 'post-production hook follows direct serialized prose')
 assert(
   prompts.buildOutlinePrompt('idea', 'dramatic', 'vi', 17, [], []).system.includes('3060-3740'),
   'arbitrary duration produces a proportional outline length target'
@@ -218,3 +314,20 @@ const custom = prompts.buildChapterChunkPrompt(outline, 0, 'custom', 'en', {
   customStyle
 })
 assert(custom.system.includes(customStyle), 'custom style reaches chapter prompt verbatim')
+const genreContract = prompts.buildGenreFidelityContract('custom', 'anime fantasy academy level-up', profile)
+assert(genreContract.includes('THE SELECTED TAG ALWAYS WINS'), 'selected tag is an explicit binding contract')
+assert(genreContract.includes('political debate'), 'genre drift directions are explicitly blocked')
+assert(genreContract.includes('Student or academy life as an active setting'), 'academy tag expands into concrete genre anchors')
+assert(genreContract.includes('Visible progression loop'), 'level-up tag expands into progression requirements')
+assert(genreContract.includes('clearly fantastical world'), 'fantasy tag prevents realistic social-drama substitution')
+assert(genreContract.includes('WORLD / ERA CORE TO PRESERVE'), 'genre contract preserves world and era core')
+const crossWorldContract = prompts.buildGenreFidelityContract('custom', 'anime xuyên không giao thương', null)
+assert(!crossWorldContract.includes('A clearly fantastical world'), 'cross-world wording alone does not force a fantasy civilization')
+assert(crossWorldContract.includes("preserve each named world's own era"), 'cross-world genre anchor preserves each world era')
+assert(prompts.buildChapterChunkPrompt(outline, 0, 'custom', 'en', {
+  ...baseChunkOptions, customStyle: 'anime fantasy academy level-up', inspirationProfile: profile, enableHook: false
+}).system.includes('GENRE FIDELITY CONTRACT'), 'chapter writing enforces genre fidelity')
+assert(storyStore.includes('buildPostStoryHookPrompt'), 'full-story completion invokes the shared hook editor')
+assert(storyStore.includes('enableHook: false'), 'chapter writing no longer forces a disconnected opening hook')
+assert(wizardStep1.includes('Tạo hook hậu kỳ'), 'hook checkbox describes post-production behavior')
+assert(wizardStep3.includes('regenerateHook'), 'story output can retry the generated hook')

@@ -61,6 +61,29 @@ function OutlineReview(): JSX.Element {
           <div className="originality-report__section">
             <strong>Đã thay đổi:</strong> {p.originalityReport.changedAxes.join(' · ')}
           </div>
+          <div className="originality-report__section">
+            <strong>Độ trung thành thể loại:</strong> {p.originalityReport.genreFidelityScore ?? '—'}/100
+            {p.originalityReport.genreEvidence?.length ? ` · ${p.originalityReport.genreEvidence.slice(0, 3).join(' · ')}` : ''}
+          </div>
+          <div className="originality-report__section">
+            <strong>Setting and era fidelity:</strong> {p.originalityReport.settingFidelityScore ?? '—'}/100
+            {p.originalityReport.settingEvidence?.length ? ` · ${p.originalityReport.settingEvidence.slice(0, 2).join(' · ')}` : ''}
+          </div>
+          {!!p.originalityReport.settingDrift?.length && (
+            <div className="originality-report__section originality-report__section--warning">
+              <strong>Setting or era drift:</strong> {p.originalityReport.settingDrift.join(' · ')}
+            </div>
+          )}
+          {!!p.originalityReport.missingGenreElements?.length && (
+            <div className="originality-report__section originality-report__section--warning">
+              <strong>Thiếu lõi thể loại:</strong> {p.originalityReport.missingGenreElements.join(' · ')}
+            </div>
+          )}
+          {!!p.originalityReport.genreDrift?.length && (
+            <div className="originality-report__section originality-report__section--warning">
+              <strong>Lệch sang thể loại khác:</strong> {p.originalityReport.genreDrift.join(' · ')}
+            </div>
+          )}
           {!!p.originalityReport.softSimilarities?.length && (
             <div className="originality-report__section">
               <strong>Tương đồng cần lưu ý:</strong> {p.originalityReport.softSimilarities.join(' · ')}
@@ -195,7 +218,7 @@ function GeneratingOutline(): JSX.Element {
 function StoryOutput(): JSX.Element {
   const p = useAppStore((s) => s.getActiveProject())
   const runtime = useAppStore((s) => s.getActiveRuntime())
-  const { exportProject, resetWizard, clearError, regenerateOutline, continueWriting, retryLastAction, retryOutlineStronger, setStep } = useAppStore()
+  const { exportProject, resetWizard, clearError, regenerateOutline, continueWriting, retryLastAction, retryOutlineStronger, regenerateHook, setStep } = useAppStore()
 
   if (!p) return <div />
 
@@ -213,6 +236,7 @@ function StoryOutput(): JSX.Element {
   }
 
   const hasFailed = !!runtime.error && !runtime.isGenerating
+  const hookFailed = hasFailed && runtime.lastAction === 'generateHook'
 
   return (
     <div className="story-output">
@@ -241,7 +265,9 @@ function StoryOutput(): JSX.Element {
         <div className="error-banner">
           <span>{runtime.error}</span>
           <div className="error-banner__actions">
-            {!p.outline ? (
+            {hookFailed ? (
+              <button className="btn btn--sm btn--primary" onClick={regenerateHook}>🪝 Thử lại hook</button>
+            ) : !p.outline ? (
               <>
                 <button className="btn btn--sm btn--primary" onClick={retryLastAction}>🔄 Thử lại</button>
                 <button className="btn btn--sm btn--secondary" onClick={retryOutlineStronger}>↗ Biến đổi mạnh hơn</button>
@@ -300,6 +326,13 @@ function StoryOutput(): JSX.Element {
         </div>
       )}
 
+      {p.hookText && (
+        <section className="story-output__hook" aria-label="Hook mở đầu">
+          <div className="story-output__hook-title">🪝 Hook mở đầu từ cảnh nổi bật</div>
+          <div className="story-output__hook-text">{p.hookText}</div>
+        </section>
+      )}
+
       <div className="story-output__content">
         {displayText || (
           <div className="empty-state">
@@ -322,7 +355,7 @@ function StoryOutput(): JSX.Element {
       <LogPanel logs={runtime.logs} />
 
       <div className="story-output__actions">
-        {hasFailed && (
+        {hasFailed && !hookFailed && (
           <>
             <button className="btn btn--primary" onClick={continueWriting}>▶ Tiếp tục viết</button>
             <button className="btn btn--secondary" onClick={retryLastAction}>🔄 Thử lại chương lỗi</button>
@@ -330,6 +363,7 @@ function StoryOutput(): JSX.Element {
         )}
         {!runtime.isGenerating && p.generatedStory && !hasFailed && (
           <>
+            {p.enableHook !== false && <button className="btn btn--secondary" onClick={regenerateHook}>🪝 Tạo lại hook</button>}
             <button className="btn btn--secondary" onClick={handleCopy}>📋 Sao chép</button>
             <button className="btn btn--secondary" onClick={() => handleExport('md')}>📄 Xuất .md</button>
             <button className="btn btn--secondary" onClick={() => handleExport('txt')}>📄 Xuất .txt</button>

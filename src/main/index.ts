@@ -32,6 +32,7 @@ interface ProjectRecord {
   viSummary: string
   userDirection: string
   generatedStory: string
+  hookText?: string
   outlineSummary: string
   writingMemory: unknown
 }
@@ -441,9 +442,13 @@ ipcMain.handle('store:export-story', async (_event, project: ProjectRecord, form
 
   if (result.canceled || !result.filePath) return false
 
+  const hook = project.hookText?.trim()
   let content = project.generatedStory
+  if (hook) {
+    content = `${hook}\n\n---\n\n${content}`
+  }
   if (format === 'md') {
-    content = `# ${title}\n\n> Style: ${project.style} | Language: ${project.language} | Duration: ${project.duration} min\n\n---\n\n${project.generatedStory}`
+    content = `# ${title}\n\n> Style: ${project.style} | Language: ${project.language} | Duration: ${project.duration} min\n\n---\n\n${hook ? `${hook}\n\n---\n\n` : ''}${project.generatedStory}`
   }
 
   writeFileSync(result.filePath, content, 'utf-8')
@@ -457,7 +462,9 @@ ipcMain.handle('api:test-connection', async (_event, override?: Partial<Settings
 
   const response = await fetch(url, {
     method: 'GET',
+    cache: 'no-store',
     headers: {
+      Accept: 'application/json',
       Authorization: `Bearer ${settings.apiKey}`
     }
   })

@@ -39,6 +39,20 @@ export type TransformationLevel = 'develop' | 'original' | 'reborn'
 
 export interface InspirationProfile {
   sourceType: 'short-idea' | 'summary' | 'outline' | 'full-story'
+  /** Genre labels found in the source, kept only when compatible with the selected style. */
+  sourceGenreTags: string[]
+  /** Non-negotiable genre conventions such as academy life, quests, battles, or romance beats. */
+  genreCore: string[]
+  /** Non-negotiable world, era, technology level and cross-world relationship from the source. */
+  settingEraCore?: string[]
+  /** Abstract premise and motifs to preserve without copying the source event chain. */
+  storyCore: string[]
+  /** The progression/reward loop the target audience expects from this kind of story. */
+  progressionCore: string[]
+  /** Concrete audience payoffs the new story must repeatedly deliver. */
+  audiencePromise: string[]
+  /** Genres or thematic directions that would displace the selected genre. */
+  avoidGenreDrift: string[]
   essence: string[]
   expansionOpportunities: string[]
   requiredElements: string[]
@@ -64,6 +78,20 @@ export interface OriginalityReport {
   /** Broad thematic or structural similarities shown as warnings only. */
   softSimilarities?: string[]
   plotSimilarity?: number
+  /** How faithfully the outline fulfills the selected genre and compatible source DNA. */
+  genreFidelityScore?: number
+  /** Concrete outline evidence that the genre contract is being fulfilled. */
+  genreEvidence?: string[]
+  /** Required genre conventions that are absent or too weak. */
+  missingGenreElements?: string[]
+  /** Unselected genres or abstract themes that have displaced the intended experience. */
+  genreDrift?: string[]
+  /** Whether the proposed outline preserves the specified world and era boundaries. */
+  settingFidelityScore?: number
+  /** Concrete evidence that the proposed outline preserves the required world and era. */
+  settingEvidence?: string[]
+  /** Concrete world/era contradictions found by the auditor. */
+  settingDrift?: string[]
   /** Near-pass candidate that is safe enough to review with a warning. */
   usableWithWarning?: boolean
 }
@@ -104,7 +132,7 @@ export interface Project {
   language: Language
   customLanguage: string
   duration: number
-  /** Bật hook giữ chân trong dàn ý và phần mở đầu. */
+  /** Bật hook hậu kỳ: chọn cảnh ấn tượng từ full truyện sau khi viết xong. */
   enableHook: boolean
   /** Tốc độ đọc tự khai (ký tự/phút). 0 = dùng mặc định theo ngôn ngữ. */
   readingSpeed: number
@@ -131,6 +159,8 @@ export interface Project {
 
   // Step 3 — story
   generatedStory: string
+  /** Hook được biên tập từ một cảnh thật trong full truyện sau khi hoàn tất. */
+  hookText: string
   outlineSummary: string
 
   // Writing progress (persisted for resume)
@@ -171,6 +201,7 @@ export function createEmptyProject(id: string, name: string, projectType: Projec
     viSummary: '',
     userDirection: '',
     generatedStory: '',
+    hookText: '',
     outlineSummary: '',
     writingMemory: null
   }

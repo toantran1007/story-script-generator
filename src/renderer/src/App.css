@@ -1142,9 +1142,72 @@ body {
   font-size: 13px;
 }
 
+.story-output__hook {
+  margin: 1rem 0;
+  padding: 1rem 1.25rem;
+  border: 1px solid rgba(245, 158, 11, 0.45);
+  border-left: 4px solid #f59e0b;
+  border-radius: 0.75rem;
+  background: rgba(245, 158, 11, 0.08);
+}
+
+.story-output__hook-title {
+  margin-bottom: 0.5rem;
+  font-weight: 700;
+}
+
+.story-output__hook-text {
+  white-space: pre-wrap;
+  line-height: 1.65;
+}
+
+.api-model-picker {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.api-model-picker--stacked {
+  align-items: stretch;
+  flex-wrap: wrap;
+}
+
+.api-model-picker--stacked .form-select,
+.api-model-picker--stacked .form-input {
+  flex: 1 1 100%;
+}
+
+.api-model-picker--stacked .api-model-refresh {
+  margin-left: auto;
+}
+
+.api-model-picker .form-select,
+.api-model-picker .form-input {
+  min-width: 0;
+  flex: 1;
+}
+
+.api-model-refresh {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
 .api-connection-message {
   display: inline-flex;
   margin-top: 7px;
+}
+
+.api-stale-model-warning {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 8px;
+  padding: 8px 10px;
+  border: 1px solid rgba(245, 158, 11, 0.35);
+  border-radius: 6px;
+  color: #fbbf24;
+  font-size: 12px;
 }
 
 .api-connection-actions {
@@ -1161,6 +1224,11 @@ body {
 
   .api-provider-card {
     min-height: 0;
+  }
+
+  .api-model-picker {
+    align-items: stretch;
+    flex-direction: column;
   }
 }
 

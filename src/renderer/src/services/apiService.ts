@@ -6,6 +6,10 @@ import type { AppSettings, ChatMessage, ChatOptions } from '@/types'
 // để nút Dừng có thể huỷ toàn bộ request đang bay của riêng dự án đó.
 const activeByOwner = new Map<string, Set<string>>()
 const cancelledOwners = new Set<string>()
+const VILAO_MODEL_ALIASES: Record<string, string> = {
+  'gemini-3.7-flash-high': 'anxs/gemini-3.7-flash-high',
+  'gpt-5.6-sol': 'cd/gpt-5.6-sol'
+}
 
 export class CancelledError extends Error {
   constructor(message = 'Đã dừng theo yêu cầu') {
@@ -198,22 +202,8 @@ export async function testConnection(
   settings?: AppSettings
 ): Promise<{ success: boolean; models?: string[]; error?: string }> {
   try {
-    const data = await window.api.testConnection(settings) as {
-      data?: Array<{
-        id: string
-        type?: string
-        capabilities?: string[] | Record<string, unknown>
-        modality?: string | string[]
-        model_id?: string
-        model_type?: string
-        provider_prefix?: string
-      }>
-    }
-    const models = (data?.data || [])
-      .filter((model) => isLlmModel(model, settings?.apiProvider))
-      .map((model) => formatModelId(model, settings?.apiProvider))
-      .filter(Boolean)
-    return { success: true, models }
+    const data = await window.api.testConnection(settings) as unknown
+    return { success: true, models: extractModelIds(data, settings?.apiProvider) }
   } catch (err) {
     return { success: false, error: cleanApiError(err) }
   }
@@ -222,7 +212,11 @@ export async function testConnection(
 /** Keep the model picker focused on text/chat models, especially for Vilao's mixed catalog. */
 export function isLlmModel(
   model: {
-    id: string
+    id?: string
+    model_id?: string
+    model?: string
+    name?: string
+    slug?: string
     type?: string
     capabilities?: string[] | Record<string, unknown>
     modality?: string | string[]
@@ -230,7 +224,8 @@ export function isLlmModel(
   },
   provider?: AppSettings['apiProvider']
 ): boolean {
-  const id = model.id.toLowerCase()
+  const id = (model.model_id || model.id || model.model || model.slug || model.name || '').toLowerCase()
+  if (!id) return false
   const metadata = [
     model.type,
     ...(Array.isArray(model.capabilities) ? model.capabilities : Object.keys(model.capabilities || {})),
@@ -251,11 +246,105 @@ export function isLlmModel(
 }
 
 export function formatModelId(
-  model: { id: string; model_id?: string; provider_prefix?: string },
+  model: {
+    id?: string
+    model_id?: string
+    model?: string
+    name?: string
+    slug?: string
+    provider_prefix?: string
+    providerPrefix?: string
+    provider?: string
+    provider_id?: string
+    providerId?: string
+    owned_by?: string
+    owner?: string
+  },
   provider?: AppSettings['apiProvider']
 ): string {
-  const id = (model.model_id || model.id).trim()
-  const prefix = (model.provider_prefix || '').trim()
-  if (provider === 'vilao' && prefix && !id.includes('/')) return `${prefix}/${id}`
-  return id
+  const id = (model.model_id || model.id || model.model || model.slug || model.name || '').trim()
+  const rawPrefix = model.provider_prefix || model.providerPrefix || model.provider_id ||
+    model.providerId || model.provider || model.owned_by || model.owner || ''
+  const prefix = rawPrefix.trim()
+  const isSafePrefix = /^[a-z0-9][a-z0-9_-]{1,15}$/i.test(prefix)
+  if (provider === 'vilao' && isSafePrefix && !id.includes('/')) return `${prefix}/${id}`
+  return provider === 'vilao' ? (VILAO_MODEL_ALIASES[id] || id) : id
+}
+
+type ApiModelRecord = {
+  id?: string
+  model_id?: string
+  model?: string
+  name?: string
+  slug?: string
+  providerPrefix?: string
+  provider?: string
+  provider_id?: string
+  providerId?: string
+  type?: string
+  capabilities?: string[] | Record<string, unknown>
+  modality?: string | string[]
+  model_type?: string
+  provider_prefix?: string
+  owned_by?: string
+  owner?: string
+}
+
+/** Normalize the different model-list envelopes used by OpenAI-compatible providers. */
+export function extractModelIds(
+  payload: unknown,
+  provider?: AppSettings['apiProvider']
+): string[] {
+  const records: ApiModelRecord[] = []
+  const identityKeys = ['id', 'model_id', 'model', 'name', 'slug'] as const
+
+  const visit = (value: unknown, mapKey?: string, depth = 0): void => {
+    if (depth > 6 || value === null || value === undefined) return
+    if (typeof value === 'string') {
+      const id = value.trim()
+      if (id) records.push({ id: id.includes('/') || !mapKey ? id : mapKey })
+      return
+    }
+    if (Array.isArray(value)) {
+      value.forEach((item) => visit(item, undefined, depth + 1))
+      return
+    }
+    if (typeof value !== 'object') return
+
+    const object = value as Record<string, unknown>
+    const nestedContainers = ['data', 'models', 'items', 'results']
+      .filter((key) => object[key] && typeof object[key] === 'object')
+    if (nestedContainers.length > 0) {
+      nestedContainers.forEach((key) => visit(object[key], key, depth + 1))
+      return
+    }
+
+    const hasIdentity = identityKeys.some((key) => typeof object[key] === 'string' && object[key]?.trim())
+    if (hasIdentity) {
+      records.push(object as ApiModelRecord)
+      return
+    }
+
+    if (mapKey && !['data', 'models', 'items', 'results'].includes(mapKey)) {
+      records.push({ ...object, id: mapKey })
+      return
+    }
+
+    Object.entries(object).forEach(([key, child]) => {
+      // Object-map catalogs commonly use the model id as the property name.
+      if (typeof child === 'string') {
+        const candidate = child.trim()
+        const looksLikeModelId = candidate.includes('/') || /^(gpt|gemini|claude|llama|qwen|mistral|deepseek|command|o\d)/i.test(candidate)
+        records.push(looksLikeModelId ? { id: key, model_id: candidate } : { id: key })
+      } else {
+        visit(child, key, depth + 1)
+      }
+    })
+  }
+
+  visit(payload)
+  return Array.from(new Set(records
+    .filter((record) => isLlmModel(record, provider))
+    .map((record) => formatModelId(record, provider))
+    .filter(Boolean)))
 }

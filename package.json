@@ -1,6 +1,6 @@
 {
   "name": "story-script-generator",
-  "version": "1.12.7",
+  "version": "1.12.8",
   "description": "Electron app to generate diverse story scripts from ideas via AI",
   "main": "./out/main/index.js",
   "author": "kichban",
