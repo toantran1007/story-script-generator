@@ -5,6 +5,7 @@ directories:
 files:
   - out/**/*
   - package.json
+  - '!data/**/*'
 win:
   executableName: StoryScriptGenerator
   target:

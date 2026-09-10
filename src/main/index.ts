@@ -1,11 +1,14 @@
 import { app, shell, BrowserWindow, ipcMain, dialog } from 'electron'
-import { join } from 'path'
+import { join, dirname, relative, resolve } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import Store from 'electron-store'
 import { readFile } from 'fs/promises'
-import { writeFileSync } from 'fs'
+import { writeFileSync, existsSync } from 'fs'
 import { autoUpdater } from 'electron-updater'
-import { buildChatCompletionBody } from './modelResolver'
+import { formatStoryWithHook } from '../shared/storyFormatting'
+import { ProjectFileStore } from './projectFiles'
+import { readChatResponse } from './chatResponse'
+import { providerRequest, usesResponses, responseText, readResponsesStream } from './responsesProvider'
 
 interface ProjectRecord {
   id: string
@@ -14,6 +17,7 @@ interface ProjectRecord {
   createdAt: string
   updatedAt: string
   idea: string
+  ideaInputType?: 'idea' | 'outline'
   storyNotes?: string
   autoFlow?: boolean
   style: string
@@ -61,6 +65,8 @@ const store = new Store<{
   settings: SettingsRecord
   customStyles: string[]
   customLanguages: string[]
+  workspaceSession: unknown
+  projectDataRoot?: string
 }>({
   defaults: {
     projects: [],
@@ -68,9 +74,9 @@ const store = new Store<{
       apiProvider: 'legacy',
       apiProfiles: {
         legacy: {
-          apiBaseUrl: 'http://localhost:20128/v1',
+          apiBaseUrl: 'http://localhost:64072/v1',
           apiKey: '',
-          model: ''
+          model: 'gpt-6-astra'
         },
         vilao: {
           apiBaseUrl: 'https://api.vilao.ai/v1',
@@ -79,16 +85,52 @@ const store = new Store<{
         },
         custom: { apiBaseUrl: '', apiKey: '', model: '' }
       },
-      apiBaseUrl: 'http://localhost:20128/v1',
+      apiBaseUrl: 'http://localhost:64072/v1',
       apiKey: '',
-      model: '',
+      model: 'gpt-6-astra',
       maxTokens: 16384,
       temperature: 0.8
     },
     customStyles: [],
-    customLanguages: []
+    customLanguages: [],
+    workspaceSession: null
   }
 })
+
+let projectFiles: ProjectFileStore<ProjectRecord> | null = null
+function files(): ProjectFileStore<ProjectRecord> {
+  if (!projectFiles) throw new Error('Thư mục dữ liệu chưa sẵn sàng')
+  return projectFiles
+}
+
+async function initializeProjectFiles(): Promise<void> {
+  const savedRoot = store.get('projectDataRoot')
+  let root = savedRoot || join(app.isPackaged ? process.env.PORTABLE_EXECUTABLE_DIR || dirname(process.execPath) : app.getAppPath(), 'data')
+  try {
+    assertDataRootLocation(root)
+    if (savedRoot && !existsSync(savedRoot)) throw new Error('Thư mục dữ liệu đã chọn không còn truy cập được')
+    projectFiles = new ProjectFileStore<ProjectRecord>(root)
+  } catch (error) {
+    await dialog.showMessageBox({ type: 'warning', message: 'Không truy cập được thư mục dữ liệu dự án.',
+      detail: `${root}\n${error instanceof Error ? error.message : String(error)}\nHãy chọn lại thư mục dữ liệu cũ, hoặc thư mục có quyền ghi nếu đây là lần thiết lập đầu. Dữ liệu cũ chưa bị xoá.` })
+    const choice = await dialog.showOpenDialog({ title: 'Chọn thư mục dữ liệu của tool', properties: ['openDirectory', 'createDirectory'] })
+    if (choice.canceled || !choice.filePaths[0]) throw new Error('Chưa chọn thư mục dữ liệu; dữ liệu cũ được giữ nguyên')
+    root = choice.filePaths[0]
+    assertDataRootLocation(root)
+    if (savedRoot && !existsSync(join(root, 'data-root.json'))) throw new Error('Hãy chọn đúng thư mục dữ liệu cũ có data-root.json để tránh mở nhầm một kho trống.')
+    projectFiles = new ProjectFileStore<ProjectRecord>(root)
+  }
+  const legacy = store.get('projects', [])
+  projectFiles.migrate(legacy)
+  store.set('projectDataRoot', projectFiles.root)
+  if (legacy.length) store.set('projects', [])
+}
+
+function assertDataRootLocation(root: string): void {
+  if (app.isPackaged) return
+  const first = relative(app.getAppPath(), resolve(root)).split(/[\\/]/)[0].toLowerCase()
+  if (['out', 'dist', 'node_modules', '.git', '.agents'].includes(first)) throw new Error('Không đặt dữ liệu trong thư mục build/dependency; hãy chọn thư mục data hoặc thư mục riêng.')
+}
 
 function createWindow(): void {
   const mainWindow = new BrowserWindow({
@@ -231,9 +273,8 @@ ipcMain.handle('api:abort', (_event, requestId: string) => {
 // API proxy to avoid CORS
 ipcMain.handle('api:chat', async (_event, messages, options, requestId?: string) => {
   const settings = store.get('settings')
-  const url = buildApiUrl(settings.apiBaseUrl, 'chat/completions')
-
-  const body = buildChatCompletionBody(settings, messages, options)
+  const { endpoint, body } = providerRequest(settings, messages, options)
+  const url = buildApiUrl(settings.apiBaseUrl, endpoint)
 
   const controller = new AbortController()
   if (requestId) activeRequests.set(requestId, controller)
@@ -255,18 +296,17 @@ ipcMain.handle('api:chat', async (_event, messages, options, requestId?: string)
     }
 
     const data = await response.json()
-    return data.choices?.[0]?.message?.content ?? ''
+    return usesResponses(settings) ? responseText(data) : readChatResponse(data)
   } finally {
     if (requestId) activeRequests.delete(requestId)
   }
 })
 
 // Streaming API proxy — mỗi lần gọi có streamId riêng để chunk không lẫn giữa các tab
-ipcMain.handle('api:chat-stream', async (event, messages, options, streamId?: string) => {
+ipcMain.handle('api:chat-stream', async (event, messages, options, streamId?: string, detailed = false) => {
   const settings = store.get('settings')
-  const url = buildApiUrl(settings.apiBaseUrl, 'chat/completions')
-
-  const body = buildChatCompletionBody(settings, messages, options, true)
+  const { endpoint, body } = providerRequest(settings, messages, options, true)
+  const url = buildApiUrl(settings.apiBaseUrl, endpoint)
 
   const controller = new AbortController()
   if (streamId) activeRequests.set(streamId, controller)
@@ -289,16 +329,21 @@ ipcMain.handle('api:chat-stream', async (event, messages, options, streamId?: st
 
     const reader = response.body?.getReader()
     if (!reader) throw new Error('No readable stream')
+    if (usesResponses(settings)) {
+      const result = await readResponsesStream(reader, (content) => {
+        if (!event.sender.isDestroyed()) event.sender.send('api:stream-chunk', { streamId: streamId ?? '', content })
+      })
+      return detailed ? result : result.text
+    }
 
     const decoder = new TextDecoder()
     let fullText = ''
     let buffer = ''
+    let finishReason: string | null = null
 
     while (true) {
       const { done, value } = await reader.read()
-      if (done) break
-
-      buffer += decoder.decode(value, { stream: true })
+      buffer += done ? decoder.decode() + '\n' : decoder.decode(value, { stream: true })
       const lines = buffer.split('\n')
       buffer = lines.pop() || ''
 
@@ -310,6 +355,7 @@ ipcMain.handle('api:chat-stream', async (event, messages, options, streamId?: st
 
         try {
           const parsed = JSON.parse(data)
+          if (parsed.choices?.[0]?.finish_reason) finishReason = parsed.choices[0].finish_reason
           const content = parsed.choices?.[0]?.delta?.content
           if (content) {
             fullText += content
@@ -321,27 +367,38 @@ ipcMain.handle('api:chat-stream', async (event, messages, options, streamId?: st
           // Skip malformed JSON chunks
         }
       }
+      if (done) break
     }
 
-    return fullText
+    return detailed ? { text: fullText, finishReason } : fullText
   } finally {
     if (streamId) activeRequests.delete(streamId)
   }
 })
 
 // --- Project CRUD ---
-ipcMain.handle('store:get-projects', () => store.get('projects', []))
+ipcMain.handle('store:get-projects', () => files().list())
 
 ipcMain.handle('store:save-project', (_event, project: ProjectRecord) => {
-  const projects = store.get('projects', [])
-  const idx = projects.findIndex((p) => p.id === project.id)
-  if (idx >= 0) {
-    projects[idx] = project
-  } else {
-    projects.unshift(project)
+  files().save(project)
+  return []
+})
+
+ipcMain.handle('store:get-workspace', () => store.get('workspaceSession', null))
+ipcMain.handle('store:save-workspace', (_event, workspace: unknown) => {
+  store.set('workspaceSession', workspace)
+})
+
+// Only the final unload checkpoint is synchronous, so the renderer waits for disk acknowledgement.
+ipcMain.on('store:flush-projects', (event, incoming: ProjectRecord[], workspace?: unknown) => {
+  try {
+    if (!Array.isArray(incoming)) throw new Error('Invalid project checkpoint')
+    for (const project of incoming) files().save(project)
+    if (workspace !== undefined) store.set('workspaceSession', workspace)
+    event.returnValue = { success: true }
+  } catch (error) {
+    event.returnValue = { success: false, error: error instanceof Error ? error.message : String(error) }
   }
-  store.set('projects', projects)
-  return projects
 })
 
 ipcMain.handle('file:read-txt', async () => {
@@ -382,11 +439,18 @@ ipcMain.handle('file:read-txt', async () => {
   return { name: filePath.split(/[\\/]/).pop() || 'script.txt', content, bytes: file.length }
 })
 
-ipcMain.handle('store:delete-project', (_event, id: string) => {
-  const projects = store.get('projects', []).filter((p) => p.id !== id)
-  store.set('projects', projects)
-  return projects
+ipcMain.handle('store:confirm-delete-project', async (_event, id: string) => {
+  const project = files().list().find((p) => p.id === id)
+  if (!project) return true // A committed deletion may need retrying after a filesystem error.
+  const answer = await dialog.showMessageBox({ type: 'warning', buttons: ['Xoá dự án', 'Hủy'], defaultId: 1, cancelId: 1,
+    message: `Xoá vĩnh viễn dự án “${project.name}”?`, detail: 'Tác vụ đang chạy sẽ dừng. Truyện, memory và bản sao lưu nội bộ của dự án sẽ bị xoá khỏi máy, không thể khôi phục. File đã xuất ra nơi khác không bị xoá.' })
+  return answer.response === 0
 })
+ipcMain.handle('store:delete-project', (_event, id: string) => { files().remove(id); return [] })
+ipcMain.handle('store:get-deleted-projects', () => files().listDeleted())
+ipcMain.handle('store:restore-project', (_event, id: string) => files().restore(id))
+ipcMain.handle('store:get-data-root', () => files().root)
+ipcMain.handle('store:open-data-root', () => shell.openPath(files().root))
 
 // Settings
 ipcMain.handle('store:get-settings', () => store.get('settings'))
@@ -442,13 +506,9 @@ ipcMain.handle('store:export-story', async (_event, project: ProjectRecord, form
 
   if (result.canceled || !result.filePath) return false
 
-  const hook = project.hookText?.trim()
-  let content = project.generatedStory
-  if (hook) {
-    content = `${hook}\n\n---\n\n${content}`
-  }
+  let content = formatStoryWithHook(project.generatedStory, project.hookText, project.language)
   if (format === 'md') {
-    content = `# ${title}\n\n> Style: ${project.style} | Language: ${project.language} | Duration: ${project.duration} min\n\n---\n\n${hook ? `${hook}\n\n---\n\n` : ''}${project.generatedStory}`
+    content = `# ${title}\n\n> Style: ${project.style} | Language: ${project.language} | Duration: ${project.duration} min\n\n---\n\n${content}`
   }
 
   writeFileSync(result.filePath, content, 'utf-8')
@@ -553,7 +613,18 @@ function setupAutoUpdate(): void {
 }
 
 // --- App Lifecycle ---
-app.whenReady().then(() => {
+const primaryInstance = app.requestSingleInstanceLock()
+if (!primaryInstance) app.quit()
+app.on('second-instance', () => {
+  const window = BrowserWindow.getAllWindows()[0]
+  if (window) { if (window.isMinimized()) window.restore(); window.focus() }
+})
+app.whenReady().then(async () => {
+  if (!primaryInstance) return
+  try { await initializeProjectFiles() } catch (error) {
+    dialog.showErrorBox('Không mở được dữ liệu dự án', error instanceof Error ? error.message : String(error))
+    app.quit(); return
+  }
   electronApp.setAppUserModelId('com.kichban.story-generator')
 
   app.on('browser-window-created', (_, window) => {

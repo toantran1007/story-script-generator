@@ -1,4 +1,4 @@
-import type { JSX } from 'react'
+import { useEffect, type JSX } from 'react'
 import { useAppStore } from '@/stores/storyStore'
 import { countText } from '@/services/textMetrics'
 import { STYLE_LABELS, LANGUAGE_LABELS, STATUS_LABELS } from '@/types'
@@ -40,7 +40,8 @@ function progressPercent(status: ProjectStatus): number {
 }
 
 export function Dashboard(): JSX.Element {
-  const { projects, openProject, deleteProject, setCreateDialogOpen, setSettingsOpen } = useAppStore()
+  const { projects, openProject, deleteProject, setCreateDialogOpen, setSettingsOpen, dataRoot, loadStorageInfo } = useAppStore()
+  useEffect(() => { void loadStorageInfo() }, [loadStorageInfo])
 
   const sorted = [...projects].sort((a, b) =>
     new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()
@@ -51,7 +52,7 @@ export function Dashboard(): JSX.Element {
       <div className="dashboard__header">
         <div>
           <h1 className="dashboard__title">Dự án của bạn</h1>
-          <p className="dashboard__subtitle">{projects.length} dự án</p>
+          <p className="dashboard__subtitle">{projects.length} dự án · Tự lưu tự động</p>
         </div>
         <div className="btn-group">
           <button className="btn btn--ghost btn--sm" onClick={() => setSettingsOpen(true)}>
@@ -60,6 +61,13 @@ export function Dashboard(): JSX.Element {
           <button className="btn btn--primary" onClick={() => setCreateDialogOpen(true)}>
             + Tạo dự án mới
           </button>
+        </div>
+      </div>
+
+      <div className="form-group">
+        <div className="form-hint">Dữ liệu trên máy: {dataRoot || 'Đang đọc thư mục dữ liệu...'}</div>
+        <div className="btn-group">
+          <button className="btn btn--secondary btn--sm" disabled={!dataRoot} onClick={() => void window.api.openDataRoot()}>Mở thư mục dữ liệu</button>
         </div>
       </div>
 

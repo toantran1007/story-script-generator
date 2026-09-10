@@ -8,6 +8,8 @@ const api = {
 
   chatStream: (messages: unknown[], options?: unknown, streamId?: string): Promise<string> =>
     ipcRenderer.invoke('api:chat-stream', messages, options, streamId),
+  chatStreamDetailed: (messages: unknown[], options?: unknown, streamId?: string): Promise<{ text: string; finishReason: string | null }> =>
+    ipcRenderer.invoke('api:chat-stream', messages, options, streamId, true),
 
   // Chỉ nhận chunk của đúng streamId đã đăng ký — nhiều tab stream song song không lẫn nhau
   onStreamChunk: (streamId: string, callback: (chunk: string) => void): (() => void) => {
@@ -35,8 +37,19 @@ const api = {
   getProjects: (): Promise<unknown[]> => ipcRenderer.invoke('store:get-projects'),
   saveProject: (project: unknown): Promise<unknown[]> =>
     ipcRenderer.invoke('store:save-project', project),
+  getWorkspace: (): Promise<unknown> => ipcRenderer.invoke('store:get-workspace'),
+  saveWorkspace: (workspace: unknown): Promise<void> => ipcRenderer.invoke('store:save-workspace', workspace),
+  flushProjects: (projects: unknown[], workspace?: unknown): void => {
+    const result = ipcRenderer.sendSync('store:flush-projects', projects, workspace)
+    if (!result?.success) throw new Error(result?.error || 'Không thể lưu phiên làm việc')
+  },
   deleteProject: (id: string): Promise<unknown[]> =>
     ipcRenderer.invoke('store:delete-project', id),
+  confirmDeleteProject: (id: string): Promise<boolean> => ipcRenderer.invoke('store:confirm-delete-project', id),
+  getDeletedProjects: (): Promise<unknown[]> => ipcRenderer.invoke('store:get-deleted-projects'),
+  restoreProject: (id: string): Promise<unknown> => ipcRenderer.invoke('store:restore-project', id),
+  getDataRoot: (): Promise<string> => ipcRenderer.invoke('store:get-data-root'),
+  openDataRoot: (): Promise<string> => ipcRenderer.invoke('store:open-data-root'),
   exportStory: (project: unknown, format: string): Promise<boolean> =>
     ipcRenderer.invoke('store:export-story', project, format),
 

@@ -4,6 +4,7 @@ import { StopButton } from '@/components/StopButton'
 import { LogPanel } from '@/components/LogPanel'
 import {
   targetCharsFor,
+  chapterCountFor,
   charsPerMinute,
   READING_SPEED_MIN,
   READING_SPEED_MAX,
@@ -20,13 +21,8 @@ function getLengthEstimate(minutes: number, language: Language, readingSpeed?: n
   return `~${chars} ký tự`
 }
 
-function getChapterEstimate(minutes: number): string {
-  if (minutes <= 10) return '1 chương'
-  if (minutes <= 20) return '2 chương'
-  if (minutes <= 30) return '3 chương'
-  if (minutes <= 45) return '5 chương'
-  if (minutes <= 60) return '7 chương'
-  return `${Math.min(30, Math.ceil(minutes / 8))} chương`
+function getChapterEstimate(minutes: number, language: Language, readingSpeed?: number): string {
+  return `~${chapterCountFor(targetCharsFor(minutes, language, readingSpeed))} chương`
 }
 
 export function WizardStep1(): JSX.Element {
@@ -36,7 +32,7 @@ export function WizardStep1(): JSX.Element {
   const savedStyles = useAppStore((s) => s.savedStyles)
   const savedLanguages = useAppStore((s) => s.savedLanguages)
   const {
-    setIdea, setTransformationLevel, setStoryNotes, setAutoFlow, setEnableHook, setStyle, setCustomStyle, setLanguage,
+    setIdea, setIdeaInputType, setTransformationLevel, setStoryNotes, setAutoFlow, setEnableHook, setStyle, setCustomStyle, setLanguage,
     setCustomLanguage, setDuration, setReadingSpeed, setMode,
     generateQuestions,
     clearError, setSettingsOpen,
@@ -50,6 +46,16 @@ export function WizardStep1(): JSX.Element {
   useEffect(() => {
     setDurationInput(String(p?.duration ?? 30))
   }, [p?.id, p?.duration])
+
+  useEffect(() => {
+    const commitPendingDuration = (): void => {
+      if (!p || !durationInput.trim() || !Number.isFinite(Number(durationInput))) return
+      const value = normalizeDuration(Number(durationInput))
+      if (value !== p.duration) setDuration(value)
+    }
+    window.addEventListener('app:commit-inputs', commitPendingDuration)
+    return () => window.removeEventListener('app:commit-inputs', commitPendingDuration)
+  }, [p?.id, p?.duration, durationInput, setDuration])
 
   if (!p) return <div />
 
@@ -92,9 +98,9 @@ export function WizardStep1(): JSX.Element {
   const styles = Object.keys(STYLE_LABELS) as StoryStyle[]
   const languages = Object.keys(LANGUAGE_LABELS) as Language[]
   const transformationLevels: { id: TransformationLevel; title: string; description: string }[] = [
-    { id: 'develop', title: 'Phát triển', description: 'Giữ tinh thần chính, mở rộng bằng nhân vật và tình huống mới' },
-    { id: 'original', title: 'Sáng tạo mới', description: 'Giữ điểm hấp dẫn trừu tượng, thay đổi sâu cốt truyện' },
-    { id: 'reborn', title: 'Tái sinh', description: 'Chỉ giữ thông điệp/cảm xúc, tái tạo gần như toàn bộ' }
+    { id: 'develop', title: 'Phát triển và mở rộng', description: 'Dựa vào dàn ý, phát triển tiếp và mở rộng chi tiết nội dung.' },
+    { id: 'original', title: 'Biến tấu theo hướng mới', description: 'Học hỏi cốt lõi điểm hay, biến tấu thành hướng đi mới đặc sắc.' },
+    { id: 'reborn', title: 'Chắt lọc tinh hoa', description: 'Chắt lọc tinh hoa từ dàn ý, viết kịch bản mới và mở rộng ý tưởng.' }
   ]
 
   return (
@@ -129,7 +135,11 @@ export function WizardStep1(): JSX.Element {
 
       <div className="form-group">
         <div className="content-input-header">
-          <label className="form-label">Ý tưởng / tóm tắt / dàn ý tham khảo</label>
+          <label className="form-label">Nguồn đầu vào kịch bản</label>
+          <select className="form-select" value={p.ideaInputType} onChange={(e) => setIdeaInputType(e.target.value as 'idea' | 'outline')} style={{ maxWidth: 220 }}>
+            <option value="idea">Ý tưởng ban đầu</option>
+            <option value="outline">Dàn ý tham khảo</option>
+          </select>
           <button
             type="button"
             className="btn btn--sm btn--secondary"
@@ -141,7 +151,7 @@ export function WizardStep1(): JSX.Element {
         </div>
         <textarea
           className="form-textarea"
-          placeholder="Mô tả ý tưởng hoặc chọn file TXT chứa nội dung kịch bản..."
+          placeholder={p.ideaInputType === 'idea' ? 'VD: Viết cho tôi kịch bản anime xuyên không về thế giới ma pháp thức tỉnh...' : 'Dán dàn ý hoặc chọn file TXT chứa nội dung kịch bản...'}
           value={p.idea}
           onChange={(e) => {
             setIdea(e.target.value)
@@ -156,25 +166,48 @@ export function WizardStep1(): JSX.Element {
           </div>
         )}
         <div className="form-hint">Hỗ trợ file .txt tối đa 5 MB và 120.000 ký tự, mã hóa UTF-8 hoặc UTF-16.</div>
+        <div className="form-group">
+          <label className="checkbox-row">
+            <input
+              type="checkbox"
+              checked={p.enableHook !== false}
+              onChange={(e) => setEnableHook(e.target.checked)}
+            />
+            <span>
+              🪝 <strong>Tạo hook hậu kỳ</strong> — chọn cảnh ấn tượng từ full truyện để làm đoạn mở đầu giữ người xem
+            </span>
+          </label>
+          <div className="form-hint">
+            {p.enableHook !== false
+              ? 'Sau khi viết xong toàn bộ, tool sẽ chọn một cảnh thật nổi bật trong truyện và biên tập thành hook liên kết với mạch truyện.'
+              : 'Truyện sẽ bắt đầu tự nhiên theo bối cảnh và nhân vật, không tạo hook hậu kỳ.'}
+          </div>
+        </div>
       </div>
 
-      <div className="form-group">
-        <label className="form-label">Mức biến đổi để tạo truyện mới</label>
-        <div className="transformation-levels">
-          {transformationLevels.map((level) => (
-            <button
-              key={level.id}
-              type="button"
-              className={`transformation-level ${p.transformationLevel === level.id ? 'transformation-level--active' : ''}`}
-              onClick={() => setTransformationLevel(level.id)}
-            >
-              <strong>{level.title}</strong>
-              <span>{level.description}</span>
-            </button>
-          ))}
+      {p.ideaInputType === 'outline' ? (
+        <div className="form-group">
+          <label className="form-label">Mức biến đổi cho dàn ý</label>
+          <div className="transformation-levels">
+            {transformationLevels.map((level) => (
+              <button
+                key={level.id}
+                type="button"
+                className={`transformation-level ${p.transformationLevel === level.id ? 'transformation-level--active' : ''}`}
+                onClick={() => setTransformationLevel(level.id)}
+              >
+                <strong>{level.title}</strong>
+                <span>{level.description}</span>
+              </button>
+            ))}
+          </div>
+          <div className="form-hint">Các luật biến đổi chỉ áp dụng cho dàn ý tham khảo: không dùng lại tên riêng, bối cảnh và chuỗi tình huống.</div>
         </div>
-        <div className="form-hint">Tên nhân vật, địa điểm, đồ vật và chuỗi tình huống từ nguồn luôn bị cấm dùng lại.</div>
-      </div>
+      ) : (
+        <div className="form-hint" style={{ marginTop: 12 }}>
+          Ý tưởng ban đầu sẽ được phát triển trực tiếp từ khái quát đến chi tiết. Mức biến đổi và kiểm định sao chép của dàn ý không áp dụng.
+        </div>
+      )}
 
       {/* Ghi chú / lưu ý — AI tuân theo ở mọi bước */}
       <div className="form-group">
@@ -325,29 +358,11 @@ export function WizardStep1(): JSX.Element {
           <span className="duration-value">phút</span>
         </div>
         <div className="duration-estimate">
-          {getLengthEstimate(p.duration, p.language, p.readingSpeed)} · {getChapterEstimate(p.duration)}
+          {getLengthEstimate(p.duration, p.language, p.readingSpeed)} · {getChapterEstimate(p.duration, p.language, p.readingSpeed)}
           {p.duration >= 30 && ' · Sinh từng chương để đảm bảo chất lượng'}
         </div>
         <div className="form-hint">
           Nhập số phút mong muốn, từ {DURATION_MIN} đến {DURATION_MAX} phút.
-        </div>
-      </div>
-
-      <div className="form-group">
-        <label className="checkbox-row">
-          <input
-            type="checkbox"
-            checked={p.enableHook !== false}
-            onChange={(e) => setEnableHook(e.target.checked)}
-          />
-          <span>
-            🪝 <strong>Tạo hook hậu kỳ</strong> — chọn cảnh ấn tượng từ full truyện để làm đoạn mở đầu giữ người xem
-          </span>
-        </label>
-        <div className="form-hint">
-          {p.enableHook !== false
-            ? 'Sau khi viết xong toàn bộ, tool sẽ chọn một cảnh thật nổi bật trong truyện và biên tập thành hook liên kết với mạch truyện.'
-            : 'Truyện sẽ bắt đầu tự nhiên theo bối cảnh và nhân vật, không tạo hook hậu kỳ.'}
         </div>
       </div>
 
@@ -379,24 +394,6 @@ export function WizardStep1(): JSX.Element {
           Số ký tự đọc thành tiếng trong 1 phút. Độ dài truyện = thời lượng × tốc độ này.
           Để trống nếu không rõ. Cách đo nhanh: đọc to một đoạn trong 1 phút rồi đếm ký tự đã đọc.
         </div>
-      </div>
-
-      <div className="form-group">
-          <label className="form-label">Chế độ tạo truyện</label>
-          <div className="mode-toggle">
-            <button
-              className={`mode-toggle__option ${p.mode === 'guided' ? 'mode-toggle__option--active' : ''}`}
-              onClick={() => setMode('guided')}
-            >
-              🎯 Hướng dẫn — Trả lời câu hỏi để định hình truyện
-            </button>
-            <button
-              className={`mode-toggle__option ${p.mode === 'auto' ? 'mode-toggle__option--active' : ''}`}
-              onClick={() => setMode('auto')}
-            >
-              🤖 Tự động — AI tự quyết định mọi thứ
-            </button>
-          </div>
       </div>
 
       {/* Tự động xuyên suốt các bước */}

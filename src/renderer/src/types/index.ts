@@ -36,6 +36,7 @@ export interface Outline {
 }
 
 export type TransformationLevel = 'develop' | 'original' | 'reborn'
+export type IdeaInputType = 'idea' | 'outline'
 
 export interface InspirationProfile {
   sourceType: 'short-idea' | 'summary' | 'outline' | 'full-story'
@@ -97,13 +98,46 @@ export interface OriginalityReport {
 }
 
 // ===== Writing Memory (persisted) =====
+export interface NarrativeState { facts: string[]; openThreads: string[] }
+export type MemoryKind = 'rule' | 'requirement' | 'character' | 'object' | 'event' | 'thread' | 'fact'
+export interface MemoryDelta {
+  id: string; kind: MemoryKind; subject: string; text: string
+  status: 'current' | 'resolved' | 'unknown'
+  importance: 'core' | 'normal'; related: string[]; evidence: string
+}
+export interface MemoryEvidenceIssue {
+  code: 'not_found' | 'ambiguous'
+  recordId: string; chapter: number; chunk: number
+  suppliedEvidence: string; proposedText: string; proposedStatus: MemoryDelta['status']; previousText?: string
+  storyChars: number
+}
+export interface MemoryRecord extends Omit<MemoryDelta, 'evidence'> {
+  version: number
+  source: { chapter: number; chunk: number; start: number; end: number; quote: string; verified: boolean }
+  verificationIssue?: MemoryEvidenceIssue
+}
+export interface MemoryHistoryEntry { chapter: number; chunk: number; before: MemoryRecord | null; after: MemoryRecord }
+export interface MemoryPacket {
+  chapter: number; chunk: number
+  payload: { chapter: { summary: string; events: string[]; state: string[]; openThreads: string[] }; updates?: MemoryDelta[]; story?: NarrativeState }
+}
+export interface ChapterDocument { chapter: number; text: string; complete: boolean; legacyPrefixMissing?: boolean; chunks: { chunk: number; start: number; end: number }[] }
+export interface ChapterMemory {
+  chapter: number
+  complete: boolean
+  summary: string
+  events: string[]
+  state: string[]
+  openThreads: string[]
+}
+
 export interface WritingMemory {
   completedChapters: number      // Number of fully written chapters
   currentChapter: number         // Chapter index being written (0-based)
   currentChunk: number           // Chunk index within chapter (0-based)
   chapterCharsWritten?: number   // Số ký tự đã viết trong chương hiện tại (để tính hạn mức khi viết tiếp)
   totalChapters: number          // Total chapters in outline
-  lastContext: string            // Last ~500 chars for AI context continuity
+  lastContext: string            // Short prose tail; chapter/global memory carries narrative state
   startedAt: string              // When writing started
   lastWriteAt: string            // When last chunk was written
 }
@@ -113,6 +147,8 @@ export interface WritingMemory {
 export type ProjectType = 'new' | 'rewrite'
 
 export interface Project {
+  writingEngine?: 'chapter-v2'
+  pendingChapter?: { chapterIndex: number; text: string; truncated?: boolean } | null
   id: string
   name: string
   projectType: ProjectType
@@ -122,6 +158,7 @@ export interface Project {
 
   // Step 1
   idea: string
+  ideaInputType: IdeaInputType
   transformationLevel: TransformationLevel
   inspirationProfile: InspirationProfile | null
   originalityReport: OriginalityReport | null
@@ -161,6 +198,16 @@ export interface Project {
   generatedStory: string
   /** Hook được biên tập từ một cảnh thật trong full truyện sau khi hoàn tất. */
   hookText: string
+  chapterMemories?: ChapterMemory[]
+  storyMemory?: NarrativeState | null
+  memoryRecords?: MemoryRecord[]
+  memoryHistory?: MemoryHistoryEntry[]
+  memoryPackets?: MemoryPacket[]
+  memoryIssues?: MemoryEvidenceIssue[]
+  chapterDocuments?: ChapterDocument[]
+  storageEpoch?: number
+  /** Preserves the pre-edit draft when consistency corrections are accepted. */
+  preReviewStory?: string
   outlineSummary: string
 
   // Writing progress (persisted for resume)
@@ -176,6 +223,7 @@ export function createEmptyProject(id: string, name: string, projectType: Projec
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
     idea: '',
+    ideaInputType: 'idea',
     transformationLevel: 'original',
     inspirationProfile: null,
     originalityReport: null,
@@ -187,7 +235,7 @@ export function createEmptyProject(id: string, name: string, projectType: Projec
     duration: 30,
     enableHook: true,
     readingSpeed: 0,
-    mode: 'guided',
+    mode: 'auto',
     autoFlow: false,
     currentStep: 1,
     originalScript: '',
@@ -203,7 +251,9 @@ export function createEmptyProject(id: string, name: string, projectType: Projec
     generatedStory: '',
     hookText: '',
     outlineSummary: '',
-    writingMemory: null
+    writingMemory: null,
+    chapterMemories: [], storyMemory: null,
+    memoryRecords: [], memoryHistory: [], memoryPackets: [], memoryIssues: [], chapterDocuments: []
   }
 }
 
@@ -285,6 +335,11 @@ export function normalizeVilaoModelId(model?: string): string {
 
 /** Recover persisted wizard snapshots left mid-generation after an app restart. */
 export function recoverStaleProject(project: Project): Project {
+  const { qualityReviewState, ...persisted } = project as Project & { qualityReviewState?: string }
+  project = persisted
+  if ((qualityReviewState === 'pending' || qualityReviewState === 'failed') && project.generatedStory.trim()) {
+    return { ...project, status: 'done', outlinePhase: 'done', writingMemory: null }
+  }
   const hasStory = project.generatedStory.trim().length > 0
   const hasOutline = Boolean(project.outline)
   const staleOutlineState = project.currentStep === 3 && !hasOutline && !hasStory &&
@@ -301,8 +356,8 @@ export function recoverStaleProject(project: Project): Project {
 }
 
 export const LEGACY_API_PRESET = {
-  apiBaseUrl: 'http://localhost:20128/v1',
-  model: ''
+  apiBaseUrl: 'http://localhost:64072/v1',
+  model: 'gpt-6-astra'
 } as const
 
 const DEPRECATED_LEGACY_API_BASE_URL = 'https://rzlbnr4.abc-tunnel.us/v1'
@@ -311,7 +366,7 @@ export const API_PROVIDER_INFO: Record<
   ApiProviderId,
   { name: string; description: string }
 > = {
-  legacy: { name: '9Router', description: 'API cục bộ · localhost:20128' },
+  legacy: { name: 'Cookpit', description: 'Responses API · localhost:64072 · gpt-6-astra' },
   vilao: { name: 'Vilao AI', description: `OpenAI-compatible · ${VILAO_API_PRESET.model}` },
   custom: { name: 'Tùy chỉnh', description: 'Endpoint OpenAI-compatible khác' }
 }
@@ -347,6 +402,12 @@ function isApiProvider(value: unknown): value is ApiProviderId {
 
 export function normalizeSettings(input?: Partial<AppSettings>): AppSettings {
   const source = input || {}
+  // Retain the internal profile key for saved sessions, not the removed router credentials.
+  const oldRouter = (url?: string): boolean => /localhost:20128|127\.0\.0\.1:20128|rzlbnr4\.abc-tunnel\.us/.test(url || '')
+  if (source.apiProvider === 'legacy' && oldRouter(source.apiBaseUrl)) {
+    return normalizeSettings({ ...source, ...LEGACY_API_PRESET, apiKey: '',
+      apiProfiles: source.apiProfiles ? { ...source.apiProfiles, legacy: { ...LEGACY_API_PRESET, apiKey: '' } } : undefined })
+  }
   const sourceApiBaseUrl = migrateLegacyApiBaseUrl(source.apiBaseUrl)
   const provider = isApiProvider(source.apiProvider)
     ? source.apiProvider
@@ -355,8 +416,8 @@ export function normalizeSettings(input?: Partial<AppSettings>): AppSettings {
   const profiles: ApiProfiles = {
     legacy: {
       ...defaults.legacy,
-      ...source.apiProfiles?.legacy,
-      apiBaseUrl: migrateLegacyApiBaseUrl(source.apiProfiles?.legacy?.apiBaseUrl) ??
+      ...(oldRouter(source.apiProfiles?.legacy?.apiBaseUrl) ? {} : source.apiProfiles?.legacy),
+      apiBaseUrl: (oldRouter(source.apiProfiles?.legacy?.apiBaseUrl) ? undefined : source.apiProfiles?.legacy?.apiBaseUrl) ??
         defaults.legacy.apiBaseUrl
     },
     vilao: {

@@ -3,6 +3,7 @@ import { StopButton } from '@/components/StopButton'
 import { LogPanel } from '@/components/LogPanel'
 import { countText, readingMinutes, targetCharsFor, distributeCharBudget } from '@/services/textMetrics'
 import type { JSX } from 'react'
+import { formatSentenceLines, formatStoryWithHook } from '@shared/storyFormatting'
 
 function OutlineReview(): JSX.Element {
   const p = useAppStore((s) => s.getActiveProject())
@@ -222,21 +223,27 @@ function StoryOutput(): JSX.Element {
 
   if (!p) return <div />
 
-  const displayText = runtime.isGenerating ? runtime.streamingText : p.generatedStory
+  const proseReady = p.status === 'done' && !p.writingMemory && !!p.generatedStory.trim()
+  const displayText = runtime.isGenerating && !proseReady ? runtime.streamingText : formatSentenceLines(p.generatedStory, p.language)
+  const displayedHook = formatSentenceLines(p.hookText, p.language)
+  const bodyText = !runtime.isGenerating && displayedHook && displayText.startsWith(displayedHook)
+    ? displayText.slice(displayedHook.length).trimStart() : displayText
   const { value: wordCount, unit } = countText(displayText, p.language)
   const readMinutes = readingMinutes(displayText, p.language, p.readingSpeed)
   const targetChars = targetCharsFor(p.duration, p.language, p.readingSpeed)
 
-  const handleExport = async (format: string): Promise<void> => {
-    await exportProject(p.id, format)
+  const handleExport = async (format: string, includeHook = true): Promise<void> => {
+    await exportProject(p.id, format, includeHook)
   }
 
   const handleCopy = (): void => {
-    navigator.clipboard.writeText(p.generatedStory)
+    const completeStory = formatStoryWithHook(p.generatedStory, p.hookText, p.language)
+    navigator.clipboard.writeText(completeStory)
   }
 
   const hasFailed = !!runtime.error && !runtime.isGenerating
   const hookFailed = hasFailed && runtime.lastAction === 'generateHook'
+  const unverifiedMemoryCount = (p.memoryRecords || []).filter((record) => record.verificationIssue && !record.source.verified).length
 
   return (
     <div className="story-output">
@@ -254,7 +261,7 @@ function StoryOutput(): JSX.Element {
         {p.outline && (
           <p className="wizard__subtitle">
             {p.outline.chapters.length} chương · {wordCount > 0 ? `${wordCount.toLocaleString()} ${unit}` : 'đang viết...'}
-            {runtime.isGenerating && runtime.writtenChapters > 0 && (
+            {runtime.isGenerating && !proseReady && runtime.writtenChapters > 0 && (
               <> · Chương {runtime.writtenChapters + 1}/{runtime.totalChapters}</>
             )}
           </p>
@@ -329,19 +336,23 @@ function StoryOutput(): JSX.Element {
       {p.hookText && (
         <section className="story-output__hook" aria-label="Hook mở đầu">
           <div className="story-output__hook-title">🪝 Hook mở đầu từ cảnh nổi bật</div>
-          <div className="story-output__hook-text">{p.hookText}</div>
+          <div className="story-output__hook-text">{displayedHook}</div>
         </section>
       )}
 
       <div className="story-output__content">
-        {displayText || (
+        {bodyText || (!p.hookText && (
           <div className="empty-state">
             <div className="empty-state__icon">✨</div>
             <div className="empty-state__title">Truyện sẽ hiển thị ở đây</div>
             <div className="empty-state__text">Đang chờ bắt đầu viết...</div>
           </div>
-        )}
+        ))}
       </div>
+
+      {p.pendingChapter && !runtime.isGenerating && <div className="resume-banner" role="status">
+        Đã lưu bản nháp chương {p.pendingChapter.chapterIndex + 1} ({p.pendingChapter.text.length.toLocaleString()} ký tự), {p.pendingChapter.truncated ? 'chờ viết nối phần bị API cắt dở' : 'chờ sửa cục bộ/memory'}. Nhấn Tiếp tục để xử lý bản nháp này, không viết lại chương.
+      </div>}
 
       {wordCount > 0 && (
         <div className="story-output__stats">
@@ -349,12 +360,21 @@ function StoryOutput(): JSX.Element {
           <span>⏱ ~{readMinutes} phút đọc</span>
           <span>🎯 hạn mức {targetChars.toLocaleString()} ký tự / {p.duration} phút</span>
           {p.outline && <span>📖 {p.outline.chapters.length} chương</span>}
+          {!!p.chapterMemories?.length && <span>Đã lưu memory {p.chapterMemories.filter((m) => m.complete).length} chương</span>}
         </div>
       )}
 
       <LogPanel logs={runtime.logs} />
 
+      {unverifiedMemoryCount > 0 && <div className="duplicate-warning" role="status">
+        Đã giữ nội dung truyện. Có {unverifiedMemoryCount} dữ kiện memory chưa xác thực; xem ID và dẫn chứng trong nhật ký. Tool không tự coi các dữ kiện này là đúng.
+      </div>}
+
       <div className="story-output__actions">
+        {proseReady && p.enableHook !== false && <>
+          <button className="btn btn--secondary" onClick={() => handleExport('txt', false)}>📄 Tải truyện .txt (không hook)</button>
+          {!!p.hookText && <button className="btn btn--secondary" onClick={() => handleExport('txt', true)}>📄 Tải truyện + hook .txt</button>}
+        </>}
         {hasFailed && !hookFailed && (
           <>
             <button className="btn btn--primary" onClick={continueWriting}>▶ Tiếp tục viết</button>

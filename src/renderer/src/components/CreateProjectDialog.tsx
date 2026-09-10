@@ -43,7 +43,7 @@ export function CreateProjectDialog(): JSX.Element {
             />
           </div>
           <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: -12 }}>
-            Nhập ý tưởng hoặc chọn file TXT, sau đó AI sẽ viết một kịch bản mới từ đầu.
+            Dự án mới giữ các lựa chọn viết gần nhất (hook, ngôn ngữ, thời lượng, tự động), không sao chép nội dung truyện cũ.
           </div>
         </div>
 

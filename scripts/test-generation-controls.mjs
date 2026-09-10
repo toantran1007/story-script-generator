@@ -10,7 +10,7 @@ function loadTypeScriptModule(path) {
     }
   }).outputText
   const module = { exports: {} }
-  new Function('module', 'exports', 'require', output)(module, module.exports, () => ({}))
+  new Function('module', 'exports', 'require', output)(module, module.exports, (id) => id === '@/services/textMetrics' ? loadTypeScriptModule('src/renderer/src/services/textMetrics.ts') : {})
   return module.exports
 }
 
@@ -63,6 +63,8 @@ assert(
   'duration input commits the normalized value when editing finishes'
 )
 assert(wizardStep1.includes('window.api.readTxtFile()'), 'new-story wizard can import TXT files')
+assert(wizardStep1.includes("p.ideaInputType === 'outline'"), 'transformation controls are shown only for outline input')
+assert(wizardStep1.includes('Ý tưởng ban đầu sẽ được phát triển trực tiếp'), 'original ideas explain their direct expansion flow')
 assert(!createDialog.includes('projectType'), 'new project dialog no longer exposes rewrite projects')
 assert(wizardStep2.includes('return <NewStep2 />'), 'step 2 always uses the new-story flow')
 assert(wizardStep3.includes('wizard wizard--generating'), 'outline generation uses the compact viewport layout')
@@ -70,6 +72,8 @@ assert(wizardStep3.includes('wizard__loading-grid'), 'outline loading placeholde
 assert(wizardStep3.includes('retryOutlineStronger'), 'outline failure exposes a stronger-transformation retry')
 assert(wizardStep3.includes("!p.outline ?"), 'outline failure does not expose a dead continue button')
 assert(!storyStore.includes('buildViSummaryPrompt'), 'outline completion does not call a separate Vietnamese summary API')
+assert(storyStore.includes("const isOriginalIdea = p.ideaInputType === 'idea'"), 'original ideas skip source transformation analysis')
+assert(fs.readFileSync('src/renderer/src/App.tsx', 'utf8').includes('flushProjects'), 'session state has a synchronous close checkpoint')
 assert(!wizardStep3.includes('p.viSummary'), 'outline review no longer renders the unused Vietnamese summary step')
 assert(storyStore.includes('viSummary: outline.outlineSummary'), 'legacy summary field reuses the existing outline summary without an API call')
 assert(appCss.includes('max-width: 1120px'), 'wizard uses the available width between both window edges')
@@ -327,7 +331,64 @@ assert(crossWorldContract.includes("preserve each named world's own era"), 'cros
 assert(prompts.buildChapterChunkPrompt(outline, 0, 'custom', 'en', {
   ...baseChunkOptions, customStyle: 'anime fantasy academy level-up', inspirationProfile: profile, enableHook: false
 }).system.includes('GENRE FIDELITY CONTRACT'), 'chapter writing enforces genre fidelity')
+const animeFantasyOpening = prompts.buildChapterChunkPrompt(outline, 0, 'custom', 'en', {
+  ...baseChunkOptions, customStyle: 'anime fantasy isekai', inspirationProfile: profile, enableHook: false
+}).system
+assert(animeFantasyOpening.includes('ANIME FANTASY ADAPTIVE OPENING'), 'anime fantasy opening adapts its pace to the premise')
+assert(animeFantasyOpening.includes('an unmistakable sign of arrival'), 'isekai opening reveals the world crossing rather than teasing it')
+assert(animeFantasyOpening.includes('observable choices, behavior, gestures'), 'opening reveals personality through action')
+assert(animeFantasyOpening.includes('Do not apply a fixed template'), 'opening strategy adapts instead of forcing a formula')
+assert(animeFantasyOpening.includes('image-rich entry'), 'anime fantasy opening is visual and brisk')
+assert(!animeFantasyOpening.includes('first three to five short paragraphs'), 'opening no longer imposes a paragraph formula')
+assert(animeFantasyOpening.includes('Outline background is a reference, not a narration checklist'), 'writing does not recite outline backstory upfront')
+const adaptiveFirstChunk = prompts.buildChapterChunkPrompt(outline, 0, 'custom', 'vi', {
+  ...baseChunkOptions, customStyle: 'anime fantasy', enableHook: false
+})
+assert(adaptiveFirstChunk.user.includes('silently revise any detached exposition'), 'first segment reviews exposition before returning')
+assert(adaptiveFirstChunk.system.includes('Do not preface the scene with a scenic tour'), 'natural opening does not demand a scenic or biographical preamble')
+assert(prompts.buildOutlinePrompt('A repair apprentice takes an exam.', 'custom', 'vi', 3, [], [], 'anime fantasy').system
+  .includes('not a list of personality traits or a history of the world'), 'outline plans scene behavior instead of upfront biography')
+assert(postStoryHook.system.includes('without a fixed sequence of beats'), 'post-production hook adapts to its actual source scene')
+for (const enableHook of [true, false]) {
+  const first = prompts.buildChapterChunkPrompt(outline, 0, 'custom', 'vi', {
+    ...baseChunkOptions, customStyle: 'anime fantasy isekai', enableHook, firstMinuteChars: 900
+  })
+  assert(first.system.includes('450–900 narrated characters'), 'isekai pacing estimate works with hook on or off')
+  assert(first.system.includes('whether the hook option is on or off'), 'isekai early-incident preference applies without forcing a timestamp')
+  assert(first.system.includes('not a fixed timestamp or a character ceiling'), 'isekai estimate is not a hard response limit')
+  assert(first.system.includes('not shot numbers, camera commands or a checklist'), 'isekai action remains illustration-ready narrative prose')
+}
+assert(prompts.isekaiFirstMinuteRules(1200).includes('600–1200 narrated characters'), 'custom reading speed changes the pacing reference only')
+assert(prompts.isekaiFirstMinuteRules().includes('roughly the first thirty to sixty seconds'), 'isekai incident favors 30–60 seconds without a fixed timestamp')
+assert(prompts.isekaiFirstMinuteRules().includes('Never pad until thirty seconds'), 'opening does not stretch setup to fill a timing quota')
+assert(!prompts.isekaiFirstMinuteRules().includes('first third'), 'opening is not divided into rigid timed fractions')
+assert(prompts.hasIsekaiPremise('Anh thợ xuyên không sang thế giới ma pháp.'), 'explicit isekai premise is recognized')
+assert(prompts.hasIsekaiPremise('A repairer.', 'anime isekai'), 'isekai style is recognized')
+assert(!prompts.hasIsekaiPremise('Không xuyên không, chỉ học viện phép thuật.', 'fantasy'), 'negated isekai is excluded')
+assert(!prompts.hasIsekaiPremise('No isekai.', 'anime isekai'), 'explicit premise exclusion wins over style')
+assert(!prompts.hasIsekaiPremise('Same-world regression and rebirth.', 'fantasy'), 'ordinary fantasy and regression are not misclassified as isekai')
+assert(prompts.isekaiFirstMinuteRules().includes('respect explicit exclusions'), 'non-isekai and same-world regression are exempt')
+assert(!prompts.isekaiFirstMinuteRules(NaN).includes('NaN'), 'invalid optional speed does not leak into the prompt')
+assert(prompts.buildOutlinePrompt('A repairer crosses into a magic world.', 'dramatic', 'vi', 3, [], [], '', '', '', false, null, 'original', [], 900)
+  .system.includes('450–900 narrated characters'), 'outline carries soft early-incident guidance even without an isekai style tag')
+assert(prompts.buildPostStoryHookPrompt('A repairer crossed worlds.', 'dramatic', 'vi', 1800, '', '', null, 900)
+  .system.includes('450–900 narrated characters'), 'exported hook carries the same soft isekai pacing guidance')
+const laterChunk = prompts.buildChapterChunkPrompt(outline, 0, 'custom', 'vi', {
+  ...baseChunkOptions, chunkIndex: 1, customStyle: 'isekai', enableHook: false, firstMinuteChars: 900
+}).system
+assert(!laterChunk.includes('ISEKAI EARLY-INCIDENT GUIDANCE'), 'continuations do not repeat the opening instructions')
+assert(laterChunk.includes('do not restart introductions'), 'later segments preserve scene continuity')
+assert(animeFantasyOpening.includes('Reveal personality through observable choices'), 'hook opening prioritizes character action over explanation')
+const dramaticOpening = prompts.buildChapterChunkPrompt(outline, 0, 'dramatic', 'en', {
+  ...baseChunkOptions, enableHook: false
+}).system
+assert(!dramaticOpening.includes('ANIME FANTASY ADAPTIVE OPENING'), 'non-fantasy opening is not forced into fantasy beats')
 assert(storyStore.includes('buildPostStoryHookPrompt'), 'full-story completion invokes the shared hook editor')
 assert(storyStore.includes('enableHook: false'), 'chapter writing no longer forces a disconnected opening hook')
 assert(wizardStep1.includes('Tạo hook hậu kỳ'), 'hook checkbox describes post-production behavior')
 assert(wizardStep3.includes('regenerateHook'), 'story output can retry the generated hook')
+assert(wizardStep3.includes('formatStoryWithHook(p.generatedStory, p.hookText'), 'copy action includes the generated hook with sentence formatting')
+assert(!naturalChunk.system.includes('Break into a new paragraph every 2-4 sentences'), 'writing no longer requests grouped paragraphs')
+assert(naturalChunk.system.includes('each complete sentence on its own line'), 'writing requests one sentence per line')
+assert(storyStore.includes('Đang phân tích nguồn tham khảo để chắt lọc điểm đặc sắc...'), 'source analysis log uses concrete wording')
+assert(!storyStore.includes('hồ sơ cảm hứng trừu tượng...'), 'source analysis log does not expose abstract internal wording')

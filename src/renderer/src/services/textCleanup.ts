@@ -1,5 +1,5 @@
 // Dọn văn bản truyện cho mục đích đọc/lồng tiếng:
-// bỏ tiêu đề, nhãn chương, ký hiệu markdown — chỉ giữ lại lời kể.
+// bỏ tiêu đề, nhãn chương, ký hiệu markdown — giữ lời kể và thoại trực tiếp.
 
 /** Dòng tiêu đề markdown: `# Mạch Nước Nở Hoa`, `### Phần kết` */
 const MD_HEADING = /^\s{0,3}#{1,6}\s*\S/
@@ -44,7 +44,7 @@ function stripInlineMarkup(line: string): string {
 
 /**
  * Làm sạch một dòng cho thu voice: chỉ giữ chữ + dấu câu đọc được (. , ! ? …),
- * loại mọi ký hiệu khiến TTS đọc sai hoặc ngắt lỗi: ( ) " ' : ; / + - — * # v.v.
+ * loại markup/chỉ dẫn sân khấu; giữ dấu ngoặc thoại để phân biệt các lượt nói.
  */
 function sanitizeForVoice(line: string): string {
   let s = line
@@ -60,10 +60,7 @@ function sanitizeForVoice(line: string): string {
   // Ngoặc lẻ còn sót
   s = s.replace(/[()（）\[\]［］{}]/g, ' ')
 
-  // Mọi loại dấu ngoặc kép / nháy: bỏ ký hiệu, giữ lời thoại
-  s = s.replace(/["“”„‟«»「」『』]/g, '')
-  // Nháy đơn: giữ apostrophe giữa chữ (I'm, O'Brien), bỏ các nháy bao quanh
-  s = s.replace(/(^|[^\p{L}\p{N}])['‘’]|['‘’](?=[^\p{L}\p{N}]|$)/gu, '$1')
+  // Quotes and apostrophes are story punctuation, not production markup.
 
   // Hai chấm: giữa hai chữ số (giờ 10:30) → khoảng trắng; còn lại → phẩy
   s = s.replace(/(\d)\s*[:：]\s*(\d)/g, '$1 $2')

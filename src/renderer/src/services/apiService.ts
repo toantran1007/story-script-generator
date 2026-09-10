@@ -6,6 +6,7 @@ import type { AppSettings, ChatMessage, ChatOptions } from '@/types'
 // để nút Dừng có thể huỷ toàn bộ request đang bay của riêng dự án đó.
 const activeByOwner = new Map<string, Set<string>>()
 const cancelledOwners = new Set<string>()
+const idleWaiters = new Map<string, Set<() => void>>()
 const VILAO_MODEL_ALIASES: Record<string, string> = {
   'gemini-3.7-flash-high': 'anxs/gemini-3.7-flash-high',
   'gpt-5.6-sol': 'cd/gpt-5.6-sol'
@@ -52,7 +53,14 @@ export function abortOwner(owner: string): void {
   for (const id of ids) {
     void window.api.abortRequest(id)
   }
-  ids.clear()
+}
+
+export function waitOwnerIdle(owner: string): Promise<void> {
+  if (!activeByOwner.get(owner)?.size) return Promise.resolve()
+  return new Promise((resolve) => {
+    const waiters = idleWaiters.get(owner) || new Set<() => void>()
+    waiters.add(resolve); idleWaiters.set(owner, waiters)
+  })
 }
 
 /** Xoá cờ huỷ — gọi trước khi bắt đầu một tác vụ mới cho owner. */
@@ -73,6 +81,10 @@ function trackRequest(owner: string | undefined, requestId: string): void {
 function untrackRequest(owner: string | undefined, requestId: string): void {
   if (!owner) return
   activeByOwner.get(owner)?.delete(requestId)
+  if (!activeByOwner.get(owner)?.size) {
+    idleWaiters.get(owner)?.forEach((resolve) => resolve())
+    idleWaiters.delete(owner)
+  }
 }
 
 // ===== Error cleanup =====
@@ -112,6 +124,7 @@ async function sleep(ms: number): Promise<void> {
 
 function isRetryableError(err: unknown): boolean {
   const errStr = String(err).toLowerCase()
+  if (/api_(empty_content|output_incomplete|refusal|response_error)/.test(errStr)) return false
   return (
     /api error 5\d\d/.test(errStr) ||
     errStr.includes('429') ||
@@ -146,7 +159,9 @@ export async function chat(
     const requestId = uuidv4()
     trackRequest(owner, requestId)
     try {
-      return await window.api.chat(messages, options, requestId)
+      const response = await window.api.chat(messages, options, requestId)
+      if (owner && isCancelled(owner)) throw new CancelledError()
+      return response
     } catch (err) {
       // Người dùng bấm Dừng — không retry, không coi là lỗi API
       if (owner && isCancelled(owner)) throw new CancelledError()
@@ -170,7 +185,8 @@ export async function chatStream(
   messages: ChatMessage[],
   onChunk: (chunk: string) => void,
   options?: ChatOptions,
-  owner?: string
+  owner?: string,
+  onFinish?: (reason: string | null) => void
 ): Promise<string> {
   let lastError: unknown
   let attempts = 0
@@ -182,7 +198,13 @@ export async function chatStream(
     trackRequest(owner, streamId)
     const cleanup = window.api.onStreamChunk(streamId, onChunk)
     try {
-      return await window.api.chatStream(messages, options, streamId)
+      const response = onFinish
+        ? await window.api.chatStreamDetailed(messages, options, streamId)
+        : await window.api.chatStream(messages, options, streamId)
+      if (owner && isCancelled(owner)) throw new CancelledError()
+      if (typeof response === 'string') return response
+      onFinish?.(response.finishReason)
+      return response.text
     } catch (err) {
       if (owner && isCancelled(owner)) throw new CancelledError()
       lastError = err

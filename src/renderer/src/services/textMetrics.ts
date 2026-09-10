@@ -54,6 +54,25 @@ export function targetCharsFor(minutes: number, language: Language, override?: n
   return Math.round(minutes * charsPerMinute(language, override))
 }
 
+export function chapterCountFor(totalChars: number): number {
+  return Math.max(1, Math.ceil(totalChars / 6000), Math.round(totalChars / 5000))
+}
+
+export function chapterBudgetsFor(count: number, totalChars: number): number[] {
+  if (count < 1) return []
+  const base = Math.floor(totalChars / count)
+  return Array.from({ length: count }, (_, i) => base + (i < totalChars % count ? 1 : 0))
+}
+
+/** Conservative output allowance, not an exact tokenizer or a prose length limit. */
+export function chapterOutputBudget(language: Language, targetChars: number, writtenChars = 0): { remainingChars: number; maxTokens: number } {
+  const tokensPerChar: Record<Language, number> = { en: 0.5, vi: 1, ja: 1.5, zh: 1.5, ko: 1.5, th: 2, custom: 2 }
+  const remainingChars = Math.max(0, Math.round(targetChars - writtenChars))
+  // A truncated final sentence/scene still needs room to conclude, even over target.
+  const completionChars = Math.max(800, remainingChars)
+  return { remainingChars, maxTokens: Math.min(16384, Math.max(2048, Math.ceil(completionChars * tokensPerChar[language]) + 1024)) }
+}
+
 /**
  * Cửa sổ HOOK mở màn: 2 phút nghe đầu tiên quyết định người xem ở lại hay rời đi.
  * Quy ra ký tự theo tốc độ đọc hiệu lực để biết những khối nào của chương 1

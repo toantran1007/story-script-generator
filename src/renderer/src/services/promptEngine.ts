@@ -7,6 +7,7 @@ import type {
   OriginalityReport,
   TransformationLevel
 } from '@/types'
+import { chapterCountFor, charsPerMinute } from '@/services/textMetrics'
 
 const STYLE_PROMPTS: Record<StoryStyle, string> = {
   humorous: `Viết với giọng văn hài hước, dí dỏm, tình huống hài bất ngờ.
@@ -118,6 +119,16 @@ export const STORY_VIDEO_RULES = `STORY VIDEO VISUAL RULES:
 - Introduce characters, costumes, important objects and locations clearly, then keep their appearance, position, lighting and continuity stable across nearby paragraphs.
 - Keep dialogue and inner thoughts concise enough to fit beside the visuals. Avoid long monologues, invisible backstory dumps and philosophical commentary that cannot be shown.
 - System panels, quest windows, skill notices, level displays, signs and any other visible on-screen text are story content: write every visible word in the target script language, never Vietnamese or English, and keep the same terminology consistent throughout the story.`
+
+export const CHARACTER_VOICE_RULES = `CHARACTER VOICE — NARRATION WITH DIRECT SPEECH:
+- Keep narration as the visual backbone: actions, positions, objects, visible reactions and consequences. Give the protagonist an audible, distinctive voice when speaking is natural, rather than paraphrasing every reaction as "he realized", "she complained" or "he felt angry".
+- Use short direct speech to express a decision, objection, fear, humor or attitude at meaningful moments. Let word choice and delivery fit the protagonist's personality, knowledge and immediate pressure. Do not insert a dialogue quota into every segment, force a mute/hidden character to speak, or turn the story into a transcript.
+- Keep speech, thought and system information distinct. Attribute a spoken line to its speaker through nearby natural narration. Attribute an inner thought explicitly as thought, not audible speech; other characters must not react to unspoken thoughts.
+- Only include system notices if the premise actually has a system. Keep its mission conditions, values and rewards precise and consistent. Distinguish an audible system announcement from a silent panel; never invent a speaking system just to fill a dialogue slot.
+- A system notice may prompt a character's brief response, silence, action or thought. Choose what fits; do not mechanically repeat narration -> notification -> complaint in every scene. Do not have narration immediately explain the same emotion already conveyed by the line.
+- In prose, put narration and direct dialogue on separate lines. Use native dialogue quotation marks, such as “...” or 「...」, and end each spoken sentence with punctuation inside its quotes. Prefer one quoted sentence per line; no blank paragraph gaps. Do not print role tags, screenplay labels, SSML or stage directions.
+- In outline JSON, plan where a character's own words or a thought matter through the existing scene summaries; keep the required JSON schema. Do not invent a separate dialogue section or fixed scene template.
+- Dialogue must lead into or respond to a concrete action that can be illustrated. Preserve the early isekai incident and the story's pacing; do not add long monologues, unrelated jokes or explanatory lore.`
 
 export const DIRECT_SERIALIZED_SCRIPT_RULES = `DIRECT SERIALIZED SCRIPT STYLE:
 - Tell events in clear chronological order: establish the exact time/place only when useful, then show what the character does, what happens, and the immediate consequence.
@@ -264,18 +275,59 @@ export const CROSS_WORLD_ERA_RULES = `CROSS-WORLD / ERA CONTINUITY:
 - For isekai, reincarnation, regression, rebirth and second-chance stories, honor the familiar premise grammar the idea actually names: keep the requested origin world, destination world, rebirth status and established fantasy/magic setting recognizable.
 - Do not invent extra dimensions, civilizations, cosmic explanations, magic systems, academies, factions or future technologies merely to make the premise feel bigger. Expand conflicts inside the requested worlds and their established rules.`
 
-export function openingStrategyRules(enableHook: boolean): string {
+export function hasIsekaiPremise(idea: string, style = ''): boolean {
+  const withoutExclusions = (text: string): string => text.replace(
+    /(?:không(?:\s+phải)?|no|not|without|non)[\s-]+(?:isekai|xuyên không|world[- ]crossing)/giu, '')
+  const isekai = /(?:\bisekai\b|xuyên không|transported (?:into|to) another world|reincarnat\w* (?:into|in) another world)/iu
+  if (/(?:không(?:\s+phải)?|no|not|without|non)[\s-]+(?:isekai|xuyên không)/iu.test(idea) && !isekai.test(withoutExclusions(idea))) return false
+  return isekai.test(withoutExclusions(`${idea}\n${style}`))
+}
+
+export function isekaiFirstMinuteRules(firstMinuteChars?: number): string {
+  const budget = firstMinuteChars && Number.isFinite(firstMinuteChars) && firstMinuteChars > 0
+    ? ` (roughly ${Math.round(firstMinuteChars / 2)}–${Math.round(firstMinuteChars)} narrated characters at the configured reading speed, for pacing reference only)` : ''
+  return `ISEKAI EARLY-INCIDENT GUIDANCE — CONDITIONAL:
+- Apply ONLY when the author's premise actually involves isekai or transport/reincarnation into another world. Fantasy, academy life, same-world rebirth or regression alone does not require a world crossing; respect explicit exclusions.
+- For isekai, prioritize the crossing-triggering incident within roughly the first thirty to sixty seconds${budget}. Establish an unmistakable sign of arrival or an immediate other-world consequence naturally, so the audience recognizes the genre instead of waiting through a long introduction.
+- This is flexible pacing guidance, not a fixed timestamp or a character ceiling. An earlier incident is welcome when natural. Never pad until thirty seconds, force arrival at exactly one minute, divide scenes into timed fractions, or truncate/regenerate a valid segment merely because it extends beyond the estimated first-minute length.
+- Any original-world setup must actively serve the imminent crossing or reveal character through doing. Remove detached biography, scenic tours and unrelated subplots; keep a short exchange or visual detail when it genuinely helps the incident feel clear and natural.
+- Establish just enough of the original situation through a meaningful action or choice, then make the crossing visible. Do not spend this window on scenic tours, biography, daily-life montage or lore. If the story starts after arrival, establish the crossing incident briefly through concrete scene evidence within the same window, not a long flashback.
+- Select the incident and staging from this story's actual premise; do not force a truck accident, death, portal, awakening or any fixed sequence onto every story. Apply the early-incident preference whether the hook option is on or off, without making the narrative mechanical.
+- Keep the prose illustration-ready: identifiable character actions, a tangible trigger, a readable visual change in surroundings and an immediate reaction. Weave these into natural narration, not shot numbers, camera commands or a checklist.
+- While composing, avoid unnecessary setup and bring the existing incident forward when the introduction drags. Preserve complete sentences, character actions, direct speech and logical transitions; never add an unrelated event solely to hit a timing target.`
+}
+
+export function openingStrategyRules(enableHook: boolean, stylePrompt = '', firstMinuteChars?: number): string {
+  const animeFantasy = /(?:anime|manga|fantasy|giả tưởng|ma pháp|phép thuật|isekai|xuyên không|tái sinh|litrpg|hệ thống|thăng cấp)/iu.test(stylePrompt)
+  const adaptiveOpening = `
+ADAPTIVE OPENING CRAFT:
+${isekaiFirstMinuteRules(firstMinuteChars)}
+- Decide the strongest opening approach from this story's premise, protagonist, genre promise and emotional tone. Do not apply a fixed template, paragraph count, cold open, or mandatory type of inciting incident.
+- Reveal personality through observable choices, behavior, gestures, dialogue and consequences. Prefer a character doing something that exposes a want, fear, value or flaw over narration that explains their personality or biography.
+- Enter at the earliest scene that makes this particular story matter, then let context emerge naturally through action, sensory detail and purposeful dialogue.
+- Use concrete, cinematic images and a clear chain of cause and effect, while varying sentence rhythm to suit the scene. Avoid generic atmosphere, encyclopedic exposition and long backstory before the audience has a reason to care.
+- A hook may be quiet, visual, emotional, humorous, mysterious or dangerous; choose what fits this story instead of forcing shock or artificial suspense.
+`
+  const animeFantasyOpening = animeFantasy
+    ? `
+ANIME FANTASY ADAPTIVE OPENING:
+- Favor a brisk, image-rich entry into this story's specific promise, with movement, a vivid setting detail or an expressive action that reveals the protagonist.
+- For isekai, use the flexible early-incident guidance above and avoid a drawn-out introduction. For same-world reincarnation or regression, follow that premise without inventing a different world.
+- Introduce the world's distinctive supernatural or visual rule through something happening on screen, not a lecture. Let the first meaningful goal, threat or decision emerge naturally from the protagonist's action.
+- Keep fantasy terminology, system displays and world-building subordinate to character behavior and the scene's emotional beat.
+`
+    : ''
   if (enableHook) {
     return `OPENING STRATEGY — CREATE AN AUDIENCE HOOK:
 - Open with a gripping situation, striking image, meaningful danger, consequential decision, or concrete unanswered question
-- Make the stakes clear in the first two minutes and create a curiosity loop answered later
-- Establish character and setting around the hook without delaying it with an information dump`
+- Make the audience care early through a meaningful action, emotion or consequence. Use a curiosity loop only when this story benefits from one; do not force a two-minute formula.
+- Establish character and setting around the hook without delaying it with an information dump${adaptiveOpening}${animeFantasyOpening}`
   }
 
   return `OPENING STRATEGY — NATURAL OPENING WITHOUT A FORCED HOOK:
-- Begin by naturally establishing the main character, setting, daily context, and cause of the conflict
+- Ground the audience through the main character doing something in a concrete setting. Supply daily context or background only when the scene needs it, not as a compulsory introduction.
 - Do not use a cold open, teaser, curiosity loop, withheld mystery question, immediate shock, or artificial danger solely to retain the audience
-- Let tension and stakes emerge gradually from the story instead of forcing them into the first two minutes`
+- Let tension and stakes emerge gradually from the story instead of forcing them into the first two minutes${adaptiveOpening}${animeFantasyOpening}`
 }
 
 // Ghi chú của tác giả — chèn vào mọi prompt khi người dùng có nhập
@@ -354,6 +406,7 @@ export function buildQuestionsPrompt(
 
   const system = `You are a professional story consultant and script writer.
 Your task: Based on the user's idea, ask 3-5 strategic questions to flesh out the story.
+When a question concerns the protagonist's personality, connect it to how they act and speak under pressure rather than asking only for a biography.
 
 Story parameters:
 - Style: ${stylePrompt}
@@ -412,6 +465,7 @@ export function buildAutoAnswerPrompt(
 
   const system = `You are a creative story consultant. Answer the following questions about a story idea creatively and thoughtfully.
 Style direction: ${stylePrompt}
+For character-related answers, suggest a fitting manner of speaking or concise response to the actual situation. Keep it consistent with the character, not a mandatory catchphrase or a speaking system absent from the premise.
 ${respondInTargetLanguage(language, customLanguage)}
 
 ${targetLanguageRules(language, customLanguage)}
@@ -455,10 +509,13 @@ export function buildOutlinePrompt(
   enableHook = true,
   inspirationProfile?: InspirationProfile | null,
   transformationLevel: TransformationLevel = 'original',
-  originalityFeedback: string[] = []
+  originalityFeedback: string[] = [],
+  firstMinuteChars?: number
 ): { system: string; user: string } {
   const stylePrompt = style === 'custom' ? customStyle || '' : STYLE_PROMPTS[style]
   const spec = getDurationSpec(duration)
+  spec.chapters = chapterCountFor(duration * (firstMinuteChars || charsPerMinute(language)))
+  spec.structure += ' Divide the narrative into chapters targeting 4,000–6,000 characters each, with natural scene boundaries. Short stories/final chapters may be shorter. These are prose character targets, not word counts.'
   const genreFidelity = buildGenreFidelityContract(style, customStyle, inspirationProfile)
 
   const antiDuplicate =
@@ -472,6 +529,8 @@ The new story must have less than 5% plot similarity.`
       : ''
 
   const system = `You are a master story architect. Create a detailed chapter outline for a story.
+
+${CHARACTER_VOICE_RULES}
 
 Story parameters:
 - Style: ${stylePrompt}
@@ -491,7 +550,7 @@ ${genreFidelity}
 ${SETTING_FIDELITY_RULES}
 ${CROSS_WORLD_ERA_RULES}
 
-${openingStrategyRules(enableHook)}
+${openingStrategyRules(enableHook, stylePrompt, firstMinuteChars)}
 
 ${NATIVE_VOICE_RULES}
 ${STORY_VIDEO_RULES}
@@ -502,7 +561,7 @@ Rules:
 - Each chapter must have: number, title, detailed summary (3-5 sentences), estimated word count
 - Each chapter summary must embody the genre through concrete story events, escalation and emotional beats. Do not write meta-analysis or name storytelling techniques inside a title or summary
 - COMPLETE ARC (mandatory): the story must have all three parts —
-  The FIRST chapter opens the story properly — introduce the main characters, the setting, and the CAUSE of the central conflict BEFORE it escalates. Never start in the middle of the crisis with no explanation
+  The FIRST chapter opens with a specific scene in which character behavior makes the setting and developing conflict understandable. Describe what someone actually does, says or chooses, not a list of personality traits or a history of the world. Orient the audience inside the scene without requiring a separate introduction before the action
   ${enableHook
     ? 'The first chapter summary describes the opening hook naturally without writing a planning label for it'
     : 'The first chapter summary describes a natural, contextual opening and must not add a teaser, curiosity loop, or forced hook'}
@@ -555,11 +614,12 @@ export function buildPostStoryHookPrompt(
   hookChars: number,
   customStyle?: string,
   customLanguage?: string,
-  inspirationProfile?: InspirationProfile | null
+  inspirationProfile?: InspirationProfile | null,
+  firstMinuteChars?: number
 ): { system: string; user: string } {
   const genreFidelity = buildGenreFidelityContract(style, customStyle, inspirationProfile)
   const system = `You are a story-video hook editor. The complete script has already been written.
-Your task is to select the single most vivid, emotionally charged and curiosity-building scene that actually exists in the completed script, then rewrite only that scene as a concise opening hook.
+Your task is to select a concise, vivid opening excerpt from a scene that actually exists in the completed script. Copy it VERBATIM; never rewrite or add any text.
 
 ${respondInTargetLanguage(language, customLanguage)}
 
@@ -573,12 +633,15 @@ ${STORY_VIDEO_RULES}
 ${DIRECT_SERIALIZED_SCRIPT_RULES}
 
 HOOK EDITING RULES:
+${isekaiFirstMinuteRules(firstMinuteChars)}
+- If the script is isekai, the hook is the actual beginning of the exported narration: favor an existing crossing scene that makes the genre recognizable early, using the same flexible thirty-to-sixty-second pacing preference. Do not prepend a long unrelated action teaser or invent a crossing absent from the completed story.
 - Use only characters, places, objects, stakes and events present in the completed script. Never invent a new scene, technology, world rule or outcome.
 - Keep the hook tightly connected to the story's strongest completed scene; do not write a generic teaser or a disconnected premise summary.
+- Select existing actions that reveal personality rather than explanatory biography. Choose an excerpt suited to this scene, without a fixed sequence of beats.
 - Create a clear visual beat suitable for a story-video opening, with concrete action and an unanswered consequence that makes viewers want the full story.
-- Preserve the script's names, world, era, genre and causal facts exactly. You may reorder details for impact, but must not contradict later events.
+- Preserve all words and their original order, including qualifications, negations, timing and outcome. Select one contiguous excerpt bounded by complete sentences. Do not merge distant scenes, imply a portal closes earlier, add an impending disaster, or change certainty into danger.
 - Do not reveal the final resolution. Do not mention that this is a hook, an editor, the source script or these instructions.
-- Keep the result under approximately ${hookChars} characters and return only the hook prose in the target language, with no title or markdown.`
+- Keep the excerpt at most ${hookChars} characters. Return ONLY JSON {"excerpt":"exact contiguous text copied from the completed story"}. Preserve whitespace inside the excerpt using JSON escapes. No title, commentary or invented cliffhanger.`
   const user = `COMPLETED STORY:\n${story}`
   return { system, user }
 }
@@ -859,13 +922,16 @@ export function buildChapterChunkPrompt(
     isLastChunk?: boolean
     /** Số ký tự còn lại của cửa sổ hook 2 phút đầu — >0 nghĩa là khối này phải viết theo luật hook */
     hookWindowChars?: number
+    firstMinuteChars?: number
     previousContext: string | null
+    hasNarrativeMemory?: boolean
     userDirection?: string
     storyNotes?: string
     customStyle?: string
     customLanguage?: string
     enableHook?: boolean
     inspirationProfile?: InspirationProfile | null
+    premise?: string
   }
 ): { system: string; user: string } {
   const stylePrompt = resolveStylePrompt(style, opts.customStyle)
@@ -877,15 +943,21 @@ export function buildChapterChunkPrompt(
   const isFirstChapter = chapterIndex === 0
   const isLastChapter = chapterIndex === outline.chapters.length - 1
   const enableHook = opts.enableHook !== false
+  const isIsekaiPremise = /(?:isekai|xuyên\s*không|sang\s*(?:một|thế giới)\s*khác|another\s+world|transported|reincarnat)/iu.test(
+    `${opts.premise || ''} ${outline.title} ${outline.outlineSummary} ${chapter.title} ${chapter.summary}`
+  )
+  const earlyIsekaiBlock = isFirstChapter && isFirstChunk && isIsekaiPremise
+    ? `\nMANDATORY EARLY ISEKAI BEAT (this premise is explicitly isekai): The crossing incident or unmistakable other-world arrival MUST occur within the first ${Math.max(450, Math.round((opts.firstMinuteChars || 900) * 1.1))} prose characters (about 30–60 seconds). Start with a character action, move directly to the trigger, show the world change and the protagonist's immediate reaction. Do not spend the opening on workshop routine, customer backstory, scenic description or unrelated dialogue. This is a pacing gate, not a reason to cut valid prose: place the incident early, then continue naturally.`
+    : ''
 
   // Mạch truyện xuyên chương: các chương đã kể + chương sắp tới,
   // để mỗi khối biết mình đứng đâu trong tổng thể và không mâu thuẫn logic
-  const toldSoFar = outline.chapters
+  const toldSoFar = opts.hasNarrativeMemory ? '' : outline.chapters
     .slice(0, chapterIndex)
     .map((c) => `- Chapter ${c.chapter} "${c.title}": ${c.summary}`)
     .join('\n')
   const nextChapter = outline.chapters[chapterIndex + 1]
-  const continuityBlock = `${toldSoFar ? `\nSTORY SO FAR (already written — stay consistent with these events, do NOT retell them):\n${toldSoFar}\n` : ''}${
+  const continuityBlock = `${toldSoFar ? `\nEARLIER CHAPTER PLAN (legacy fallback only; recent prose is authoritative, do not assume every planned event occurred or retell it):\n${toldSoFar}\n` : ''}${
     nextChapter ? `\nCOMING NEXT (do not tell it yet, but you may plant subtle setup): Chapter ${nextChapter.chapter} "${nextChapter.title}": ${nextChapter.summary}\n` : ''
   }`
 
@@ -894,16 +966,17 @@ export function buildChapterChunkPrompt(
   const hookBlock =
     enableHook && (opts.hookWindowChars ?? 0) > 0
       ? `
-AUDIENCE HOOK — this segment falls inside the story's FIRST TWO MINUTES of narration (~${opts.hookWindowChars} characters of that window remain). The first two minutes decide whether the listener stays or leaves — write them to HOLD attention:
-- The very first sentences must seize attention: open on a moment of tension, a striking image, a burning question, an unusual claim, or a decision with consequences — NEVER on weather, waking up, scenery, or calm daily routine
-- Within the first few sentences, make the STAKES felt: what the main character stands to lose, or the danger or mystery that drives the story
-- Open a curiosity loop: raise a concrete question the listener must keep listening to answer, and do NOT resolve it inside these first two minutes
-- Deliver at least one small turn, reveal, or escalation inside this window so the listener is rewarded for staying
-- Still establish WHO, WHERE, and WHY, but weave that grounding AROUND the hook in small doses — never a slow info dump before the hook lands
+AUDIENCE HOOK — this segment falls inside the story's early opening window (~${opts.hookWindowChars} characters remain). Use this space to make the audience want to continue, in a way that fits this story:
+- Choose the opening beat, degree of tension and amount of unanswered information from this premise and scene. Do not force a cold open, shock, mystery question, escalation or fixed number of beats.
+- Make the protagonist's personality legible through an observable action, choice, reaction or line of dialogue with a consequence. Avoid explaining traits before showing them.
+- Use vivid concrete images when they serve the scene, and establish enough WHO, WHERE and WHY for the audience to follow without a lore dump.
+- Create forward pull through this story's own emotional, visual or dramatic promise. Resolve or withhold information according to what feels natural for this narrative, not a universal hook formula.
 `
       : ''
 
   const system = `You are a master storyteller writing a SEGMENT of chapter ${chapter.chapter} of "${outline.title}".
+
+${CHARACTER_VOICE_RULES}
 
 Writing style:
 ${stylePrompt}
@@ -920,7 +993,10 @@ ${genreFidelity}
 ${SETTING_FIDELITY_RULES}
 ${CROSS_WORLD_ERA_RULES}
 
-${openingStrategyRules(enableHook)}
+${isFirstChapter && isFirstChunk
+  ? openingStrategyRules(enableHook, stylePrompt, opts.firstMinuteChars)
+  : 'Continue the established narrative. The opening has already been written; do not restart introductions, re-stage a world crossing or repeat the inciting incident.'}
+${earlyIsekaiBlock}
 
 ${NATIVE_VOICE_RULES}
 ${STORY_VIDEO_RULES}
@@ -932,6 +1008,7 @@ Overall story arc: ${outline.outlineSummary}
 ${continuityBlock}${authorNotesBlock(opts.storyNotes)}${opts.userDirection?.trim() ? `\nAuthor's additional direction (must be respected):\n${opts.userDirection.trim()}\n` : ''}${hookBlock}
 OUTLINE FIDELITY:
 - Treat the chapter plot and overall story arc above as fixed facts, not loose inspiration
+- Outline background is a reference, not a narration checklist. Preserve its facts without reciting biography, magic definitions or world history upfront. Choose when to reveal context through the events that need it.
 - Preserve the stated occupations, locations, objects, relationships, era, and cause of conflict exactly
 - Do not substitute a different workplace, setting, profession, key object, or premise to fit the selected style
 
@@ -939,12 +1016,12 @@ SEGMENT RULES:
 - This is segment ${opts.chunkIndex + 1}/${opts.totalChunks} of the chapter
 - ${isLastChunk && isLastChapter
     ? `LENGTH BUDGET: aim for about ${opts.targetChars} characters — but closing the story PROPERLY matters more than the exact length; exceed it if the ending needs the room`
-    : `LENGTH BUDGET: write about ${opts.targetChars} characters. This is a hard ceiling — do NOT exceed ${Math.round(opts.targetChars * 1.15)} characters. Count characters, not words`}
+    : `LENGTH BUDGET: aim for about ${opts.targetChars} characters to maintain the overall duration. This is a planning target, not an exact cutoff: keep the scene concise but do not pad or cut sentences to hit an exact number. Count characters, not words`}
 - ${isFirstChunk
     ? (isFirstChapter
         ? (enableHook
             ? 'OPEN THE STORY — execute the audience hook, then quickly establish WHO the main characters are, WHERE the story takes place, and WHY the central conflict begins'
-            : 'OPEN THE STORY NATURALLY — establish WHO the main characters are, WHERE they are, and WHY the central conflict begins. Do not add a teaser, curiosity loop, cold open, immediate shock, or forced hook')
+            : 'OPEN THE STORY NATURALLY — let a specific action, choice or exchange reveal character and place. Do not preface the scene with a scenic tour, personality labels, a biography or a magic-system explanation. Do not add an audience hook solely for retention')
         : 'START the chapter — open straight into the scene')
     : 'CONTINUE seamlessly from where the previous segment ended'}
 - ${isLastChunk
@@ -954,15 +1031,17 @@ SEGMENT RULES:
     : 'Do NOT conclude yet — leave the narrative flowing, mid-scene is fine'}
 - Write ONLY story prose in the target language — no meta-commentary, no author notes
 - Do NOT repeat content from previous segments
+- Before continuing, identify the last completed action, each present character's location, what they hold, and the current state of important objects and world rules. Continue from those facts. Do not make someone emerge, arrive, repair or awaken again without an explicit intervening change.
+- If this segment concludes the story, make the final location and fate of every principal companion clear, including who crosses back, stays behind or separates. Resolve by showing the outcome, not by silently dropping a character.
 - Maintain consistent tone, voice and pacing with the style described above
 
 OUTPUT FORMAT — this text will be recorded as VOICE by a narrator, so it must be TTS-safe:
 - Output PLAIN PROSE ONLY. No title, no story name, no chapter heading, no chapter number, no section label
 - Never write lines like "Chương 1", "Chương Một", "Chapter 2", "Phần 3", or an ALL-CAPS title line
 - No markdown whatsoever: no #, **, *, _, \`, >, ---, no bullet lists, no code blocks
-- PUNCTUATION WHITELIST: use ONLY these marks: . , ! ? … — nothing else
-- FORBIDDEN characters (they break voice recording): ( ) [ ] " " ' ' : ; / \\ + - — – * # & % = ~ _ | < >
-- Write dialogue WITHOUT quotation marks and WITHOUT leading dashes — weave it into the narration with attribution words. Example: Bà lão cất giọng khàn đặc, cậu Kha, thư của nhà tôi đâu.
+- Use sentence punctuation . , ! ? … and its native-language equivalents. Preserve native dialogue quotes and apostrophes within words; they distinguish direct speech from narration.
+- Do not use production markup, brackets for stage directions, bullets or decorative symbols: ( ) [ ] / \\ + * # & % = ~ _ | < >
+- Write a character's actual words in quotation marks on their own line, with a brief natural attribution nearby when needed to identify the speaker. Do not flatten direct dialogue into reported speech. Mark thoughts as thoughts and silent system panels as visible text, not as spoken words.
 - No parenthetical asides or stage directions like (cười), (im lặng một lúc) — describe them as narration instead
 - Write numbers, times and dates in words, the way a narrator would speak them (mười giờ ba mươi, ngày mười hai tháng tám)
 - Start directly with the narrative sentence — nothing above it
@@ -972,18 +1051,18 @@ PACING FOR SPOKEN DELIVERY — the listener needs room to breathe:
 - Split long compound sentences into separate sentences instead of chaining clauses
 - Place commas at the natural breathing points inside a sentence
 - Use an ellipsis (…) for a held pause: hesitation, dread, or just before a reveal
-- Break into a new paragraph every 2-4 sentences — each break is a pause for the narrator
+- Put each complete sentence on its own line, separated by a single newline. Do not group 2-4 sentences into paragraphs and do not insert blank lines between sentences. Keep punctuation and natural narrative rhythm.
 - Vary sentence length deliberately; a very short sentence after a long one lands hard
 - Do NOT stack clause after clause without punctuation — a breathless wall of text is the failure mode to avoid`
 
   let user = `Write segment ${opts.chunkIndex + 1}/${opts.totalChunks} of chapter ${chapter.chapter} (~${opts.targetChars} characters).`
   if (opts.previousContext) {
-    user += `\n\nPrevious context (how the story reads just before this segment):\n${opts.previousContext.slice(-500)}`
+    user += `\n\nPrevious context (events already completed — continue, do not reenact):\n${opts.previousContext.slice(-1200)}`
   }
   if (isFirstChunk && isFirstChapter) {
     user += enableHook
       ? '\n\nThis is the very first segment of the story. Execute the opening hook immediately.'
-      : '\n\nThis is the very first segment of the story. Begin naturally with context and character, without an audience hook.'
+      : '\n\nThis is the very first segment of the story. Begin naturally with character in action, without an audience hook. Before returning, silently revise any detached exposition or explanation of personality into scene-based evidence, or defer it until needed. Choose the situation, tone and rhythm yourself from this story; do not reuse a stock opening.'
   }
 
   return { system, user }
@@ -1061,12 +1140,14 @@ export function buildRewriteOutlinePrompt(
 
   const system = `You are a professional screenwriter creating a new outline from an original script, its analysis, and the selected rewrite direction.
 
+${CHARACTER_VOICE_RULES}
+
 Writing style: ${stylePrompt}
 Target language voice: ${langPrompt}
 
 ${targetLanguageRules(language, customLanguage)}
 
-${openingStrategyRules(enableHook)}
+${openingStrategyRules(enableHook, stylePrompt)}
 
 Return JSON without markdown:
 {
@@ -1136,7 +1217,8 @@ export function buildLanguageRepairPrompt(
 }
 Keep JSON property names exactly as shown. Translate or localize every string value into ${target}.`
     : `Return only repaired plain story prose. Preserve meaning, plot facts, tone, paragraph flow and approximately the same length.
-Do not add headings, markdown, explanations, quotation marks, lists, or meta-commentary.`
+Preserve dialogue quotation marks and the separation of narration, speech, thoughts and system text. Preserve who speaks each line and whether it is audible or only thought/displayed. Translate the dialogue itself; do not replace it with narrated paraphrase or add new dialogue.
+Do not add headings, markdown, explanations, lists, or meta-commentary.`
 
   const system = `You are a language consistency editor. Repair text that accidentally contains language contamination.
 

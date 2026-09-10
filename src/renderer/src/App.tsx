@@ -122,7 +122,7 @@ function ProjectView(): JSX.Element {
 }
 
 export default function App(): JSX.Element {
-  const { currentView, loadProjects, loadSettings, loadCustomPresets, isSettingsOpen, isCreateDialogOpen, openTabs } = useAppStore()
+  const { currentView, loadProjects, loadSettings, loadCustomPresets, isSettingsOpen, isCreateDialogOpen, openTabs, saveError, saveNow } = useAppStore()
 
   useEffect(() => {
     loadProjects()
@@ -130,9 +130,25 @@ export default function App(): JSX.Element {
     loadCustomPresets()
   }, [loadProjects, loadSettings, loadCustomPresets])
 
+  useEffect(() => {
+    const flush = (event: BeforeUnloadEvent): void => {
+      window.dispatchEvent(new Event('app:commit-inputs'))
+      if (!useAppStore.getState().flushProjects()) {
+        event.preventDefault()
+        event.returnValue = ''
+      }
+    }
+    window.addEventListener('beforeunload', flush)
+    return () => window.removeEventListener('beforeunload', flush)
+  }, [])
+
   return (
     <div className="app">
       <TitleBar />
+      {saveError && <div className="error-banner" role="alert">
+        <span>{saveError}</span>
+        <button className="btn btn--secondary" onClick={() => void saveNow()}>Thử lưu lại</button>
+      </div>}
       {openTabs.length > 0 && <TabBar />}
       <div className="app__body">
         <div className="main">
