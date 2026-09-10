@@ -1,6 +1,6 @@
 {
   "name": "story-script-generator",
-  "version": "1.12.8",
+  "version": "1.12.9",
   "description": "Electron app to generate diverse story scripts from ideas via AI",
   "main": "./out/main/index.js",
   "author": "kichban",
@@ -33,6 +33,7 @@
     "test:story-formatting": "node scripts/test-story-formatting.mjs",
     "test:character-voice": "node scripts/test-character-voice.mjs",
     "test:model-resolver": "node scripts/test-model-resolver.mjs",
+    "test:provider-transport": "node scripts/test-chat-response.mjs && node scripts/test-stream-metadata.mjs && node scripts/test-responses-provider.mjs && node scripts/test-api-deadline.mjs",
     "docs:codebase": "node scripts/gen-full-codebase.mjs"
   },
   "dependencies": {

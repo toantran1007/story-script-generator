@@ -1,8 +1,9 @@
 import { useEffect, type JSX } from 'react'
 import { useAppStore } from '@/stores/storyStore'
 import { countText } from '@/services/textMetrics'
-import { STYLE_LABELS, LANGUAGE_LABELS, STATUS_LABELS } from '@/types'
-import type { Project, ProjectStatus } from '@/types'
+import { STYLE_LABELS, LANGUAGE_LABELS } from '@/types'
+import type { Project } from '@/types'
+import { projectActivity } from '@/services/projectActivity'
 
 function formatDate(iso: string): string {
   const d = new Date(iso)
@@ -19,28 +20,8 @@ function formatDate(iso: string): string {
   return d.toLocaleDateString('vi-VN')
 }
 
-function statusColor(status: ProjectStatus): string {
-  switch (status) {
-    case 'draft': return 'var(--text-muted)'
-    case 'questions': return 'var(--warning)'
-    case 'outline': return 'var(--accent-light)'
-    case 'writing': return 'var(--accent)'
-    case 'done': return 'var(--success)'
-  }
-}
-
-function progressPercent(status: ProjectStatus): number {
-  switch (status) {
-    case 'draft': return 10
-    case 'questions': return 30
-    case 'outline': return 50
-    case 'writing': return 75
-    case 'done': return 100
-  }
-}
-
 export function Dashboard(): JSX.Element {
-  const { projects, openProject, deleteProject, setCreateDialogOpen, setSettingsOpen, dataRoot, loadStorageInfo } = useAppStore()
+  const { projects, runtimes, openProject, deleteProject, setCreateDialogOpen, setSettingsOpen, dataRoot, loadStorageInfo } = useAppStore()
   useEffect(() => { void loadStorageInfo() }, [loadStorageInfo])
 
   const sorted = [...projects].sort((a, b) =>
@@ -82,7 +63,9 @@ export function Dashboard(): JSX.Element {
         </div>
       ) : (
         <div className="dashboard__grid">
-          {sorted.map((project: Project) => (
+          {sorted.map((project: Project) => {
+            const activity = projectActivity(project, runtimes?.[project.id])
+            return (
             <div
               key={project.id}
               className="dashboard-card"
@@ -91,9 +74,9 @@ export function Dashboard(): JSX.Element {
               <div className="dashboard-card__header">
                 <span
                   className="dashboard-card__status"
-                  style={{ color: statusColor(project.status) }}
+                  style={{ color: activity.color }}
                 >
-                  {STATUS_LABELS[project.status]}
+                  {activity.label}
                 </span>
                 <button
                   className="dashboard-card__delete"
@@ -122,8 +105,8 @@ export function Dashboard(): JSX.Element {
                 <div
                   className="dashboard-card__progress-bar"
                   style={{
-                    width: `${progressPercent(project.status)}%`,
-                    background: statusColor(project.status)
+                    width: `${activity.percent}%`,
+                    background: activity.color
                   }}
                 />
               </div>
@@ -140,14 +123,11 @@ export function Dashboard(): JSX.Element {
                 )}
               </div>
 
-              {project.writingMemory && (
-                <div className="dashboard-card__resume">
-                  <span className="dashboard-card__resume-icon">⚡</span>
-                  <span>Viết dở — {project.writingMemory.completedChapters}/{project.writingMemory.totalChapters} chương</span>
-                </div>
-              )}
+              <div className="dashboard-card__resume" style={{ color: activity.color }}>
+                <span>{activity.detail}{project.writingMemory ? ` · ${project.writingMemory.completedChapters}/${project.writingMemory.totalChapters} chương hoàn tất` : ''}</span>
+              </div>
             </div>
-          ))}
+          )})}
         </div>
       )}
     </div>

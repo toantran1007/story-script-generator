@@ -124,7 +124,7 @@ async function sleep(ms: number): Promise<void> {
 
 function isRetryableError(err: unknown): boolean {
   const errStr = String(err).toLowerCase()
-  if (/api_(empty_content|output_incomplete|refusal|response_error)/.test(errStr)) return false
+  if (/api_(empty_content|empty_choices|output_incomplete|refusal|response_error|stream_invalid|wait_limit)/.test(errStr)) return false
   return (
     /api error 5\d\d/.test(errStr) ||
     errStr.includes('429') ||

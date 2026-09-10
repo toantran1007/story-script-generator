@@ -11,6 +11,9 @@ export function readChatResponse(data: unknown): string {
   const reasoning = Number.isSafeInteger(root.usage?.completion_tokens_details?.reasoning_tokens) ? root.usage.completion_tokens_details.reasoning_tokens : 'unknown'
   const details = `finish_reason=${finish}; content=${shape}; completion_tokens=${completion}; reasoning_tokens=${reasoning}`
   if (root.error) throw new Error(`[API_RESPONSE_ERROR] Nguồn trả đối tượng lỗi trong phản hồi. ${details}`)
+  if (Array.isArray(root.choices) && root.choices.length === 0) {
+    throw new Error(`[API_EMPTY_CHOICES] Nguồn trả choices=[]: không có câu trả lời để tool đọc. reasoning_tokens=${reasoning}; completion_tokens=${completion}. HTTP thành công không đồng nghĩa model đã trả kết quả. Đã dừng, không tự gửi lại; bản nháp được giữ.`)
+  }
   if (finish === 'length') throw new Error(`[API_OUTPUT_INCOMPLETE] Phản hồi hết ngân sách đầu ra (${text.length} ký tự). ${details}. Không tự thử lại cùng cấu hình.`)
   if (finish === 'content_filter' || choice?.message?.refusal) throw new Error(`[API_REFUSAL] Nguồn từ chối nội dung. ${details}`)
   if (!text.trim()) throw new Error(`[API_EMPTY_CONTENT] Không nhận được văn bản trả lời (0 ký tự). ${details}. Đã dừng thử lại tự động; kiểm tra model/cấu hình nguồn trước khi tiếp tục.`)

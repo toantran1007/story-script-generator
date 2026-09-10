@@ -29,6 +29,11 @@ for (const heading of ['TIME:', 'PREREQUISITES:', 'COUNTS:', 'KNOWLEDGE:', 'MEMO
   assert(app.calls[0][0].content.includes(heading), `writing receives ${heading}`)
   assert(app.chatCalls[0][0].content.includes(heading), `single correction receives ${heading}`)
 }
+for (const heading of ['LOCKED-ABILITY PROGRESSION (conditional):', 'POISON AND SURVIVAL (conditional):', 'NAMED RELIC WORDING (conditional):', 'REDEMPTION ARC (conditional):']) {
+  assert(app.calls[0][0].content.includes(heading), `writing receives ${heading}`)
+  assert(app.chatCalls[0][0].content.includes(heading), `correction receives ${heading}`)
+}
+assert(app.chatCalls[0][0].content.includes('Fear, obedience or a single warning is not redemption'))
 for (const call of [app.calls[0], app.chatCalls[0]]) {
   assert(call[0].content.includes('Skip irrelevant checks silently'))
   assert(call[0].content.includes('examples below illustrate errors, not story facts or required content'))

@@ -13,4 +13,5 @@ assert.throws(() => readChatResponse(packet('', 'length')), /API_OUTPUT_INCOMPLE
 assert.throws(() => readChatResponse(packet('partial', 'length')), /API_OUTPUT_INCOMPLETE/)
 assert.throws(() => readChatResponse(packet('', 'content_filter')), /API_REFUSAL/)
 assert.throws(() => readChatResponse({ error: { message: 'SECRET' } }), (error) => error.message.includes('API_RESPONSE_ERROR') && !error.message.includes('SECRET'))
+assert.throws(() => readChatResponse({ choices: [], usage: {total_tokens:22822,prompt_tokens:20442,completion_tokens_details:{reasoning_tokens:2380}} }), /API_EMPTY_CHOICES.*choices=\[\].*reasoning_tokens=2380/)
 console.log('PASS: final text/string blocks, empty, incomplete, refusal and provider error diagnostics without reasoning/secrets')

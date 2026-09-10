@@ -80,3 +80,25 @@ for (const enableHook of [false, true]) {
   assert(!html.includes('Tải truyện + hook .txt'), 'hook-inclusive download requires a generated hook')
 }
 console.log('PASS: prose-only hook download follows setup choice; ordinary exports remain available with hook disabled')
+
+const { Dashboard } = load(path.join(root, 'components/Dashboard.tsx'))
+const { projectActivity } = load(path.join(root, 'services/projectActivity.ts'))
+const writing = { ...createEmptyProject('running', 'Running'), status: 'writing', writingMemory: {completedChapters:6,totalChapters:9}, pendingChapter:{chapterIndex:6,text:'Saved draft.'} }
+const paused = { ...writing, id:'paused',name:'Paused' }
+const failed = { ...writing, id:'failed',name:'Failed' }
+state = {projects:[writing,paused,failed],runtimes:{running:{isGenerating:true,lastAction:'confirmAndWrite',generationProgress:'Chương 7: sửa cục bộ và cập nhật memory...'}, failed:{error:'API empty',lastAction:'confirmAndWrite'}},dataRoot:'fixture',loadStorageInfo:()=>{}}
+const dashboardHtml = renderToStaticMarkup(React.createElement(Dashboard))
+assert.equal((dashboardHtml.match(/>Đang viết</g)||[]).length,1)
+assert(dashboardHtml.includes('Tạm dừng'));assert(dashboardHtml.includes('Gặp lỗi'))
+assert(dashboardHtml.includes('Chương 7: sửa cục bộ và cập nhật memory...'))
+assert(dashboardHtml.includes('6/9 chương hoàn tất'))
+assert(dashboardHtml.includes('width:67%'))
+assert.equal(projectActivity(paused).label,'Tạm dừng','restart without runtime never claims active writing')
+assert.equal(projectActivity(writing,{isCancelling:true,isGenerating:true}).label,'Đang dừng')
+assert.equal(projectActivity(writing,{isLoadingQuestions:true}).label,'Đang tạo câu hỏi')
+assert.equal(projectActivity(writing,{isGenerating:true,lastAction:'generateOutline'}).label,'Đang tạo dàn ý')
+const completed = {...writing,status:'done',writingMemory:null,pendingChapter:null}
+assert.equal(projectActivity(completed,{isGenerating:true,lastAction:'generateHook'}).label,'Đang tạo hook')
+assert(projectActivity(completed,{error:'hook error',lastAction:'generateHook'}).detail.includes('vẫn tải được'))
+assert.equal(projectActivity(completed).label,'Hoàn thành')
+console.log('PASS: dashboard separates running/paused/error projects, real chapter progress, cancellation, hook and restart states')

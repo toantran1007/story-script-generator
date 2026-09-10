@@ -8,6 +8,7 @@ import { autoUpdater } from 'electron-updater'
 import { formatStoryWithHook } from '../shared/storyFormatting'
 import { ProjectFileStore } from './projectFiles'
 import { readChatResponse } from './chatResponse'
+import { readChatStream } from './chatStream'
 import { providerRequest, usesResponses, responseText, readResponsesStream } from './responsesProvider'
 
 interface ProjectRecord {
@@ -278,6 +279,8 @@ ipcMain.handle('api:chat', async (_event, messages, options, requestId?: string)
 
   const controller = new AbortController()
   if (requestId) activeRequests.set(requestId, controller)
+  let expired = false
+  const deadline = setTimeout(() => { expired = true; controller.abort() }, 300_000)
 
   try {
     const response = await fetch(url, {
@@ -297,7 +300,11 @@ ipcMain.handle('api:chat', async (_event, messages, options, requestId?: string)
 
     const data = await response.json()
     return usesResponses(settings) ? responseText(data) : readChatResponse(data)
+  } catch (error) {
+    if (expired) throw new Error('[API_WAIT_LIMIT] Nguồn chưa hoàn tất sau 5 phút; đã dừng yêu cầu, không tự gửi lại')
+    throw error
   } finally {
+    clearTimeout(deadline)
     if (requestId) activeRequests.delete(requestId)
   }
 })
@@ -310,6 +317,8 @@ ipcMain.handle('api:chat-stream', async (event, messages, options, streamId?: st
 
   const controller = new AbortController()
   if (streamId) activeRequests.set(streamId, controller)
+  let expired = false
+  const deadline = setTimeout(() => { expired = true; controller.abort() }, 300_000)
 
   try {
     const response = await fetch(url, {
@@ -336,42 +345,15 @@ ipcMain.handle('api:chat-stream', async (event, messages, options, streamId?: st
       return detailed ? result : result.text
     }
 
-    const decoder = new TextDecoder()
-    let fullText = ''
-    let buffer = ''
-    let finishReason: string | null = null
-
-    while (true) {
-      const { done, value } = await reader.read()
-      buffer += done ? decoder.decode() + '\n' : decoder.decode(value, { stream: true })
-      const lines = buffer.split('\n')
-      buffer = lines.pop() || ''
-
-      for (const line of lines) {
-        const trimmed = line.trim()
-        if (!trimmed || !trimmed.startsWith('data: ')) continue
-        const data = trimmed.slice(6)
-        if (data === '[DONE]') continue
-
-        try {
-          const parsed = JSON.parse(data)
-          if (parsed.choices?.[0]?.finish_reason) finishReason = parsed.choices[0].finish_reason
-          const content = parsed.choices?.[0]?.delta?.content
-          if (content) {
-            fullText += content
-            if (!event.sender.isDestroyed()) {
-              event.sender.send('api:stream-chunk', { streamId: streamId ?? '', content })
-            }
-          }
-        } catch {
-          // Skip malformed JSON chunks
-        }
-      }
-      if (done) break
-    }
-
-    return detailed ? { text: fullText, finishReason } : fullText
+    const result = await readChatStream(reader, (content) => {
+      if (!event.sender.isDestroyed()) event.sender.send('api:stream-chunk', { streamId: streamId ?? '', content })
+    })
+    return detailed ? result : result.text
+  } catch (error) {
+    if (expired) throw new Error('[API_WAIT_LIMIT] Nguồn chưa hoàn tất stream sau 5 phút; đã dừng yêu cầu, không tự gửi lại')
+    throw error
   } finally {
+    clearTimeout(deadline)
     if (streamId) activeRequests.delete(streamId)
   }
 })
