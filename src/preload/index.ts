@@ -45,7 +45,6 @@ const api = {
   },
   deleteProject: (id: string): Promise<unknown[]> =>
     ipcRenderer.invoke('store:delete-project', id),
-  confirmDeleteProject: (id: string): Promise<boolean> => ipcRenderer.invoke('store:confirm-delete-project', id),
   getDeletedProjects: (): Promise<unknown[]> => ipcRenderer.invoke('store:get-deleted-projects'),
   restoreProject: (id: string): Promise<unknown> => ipcRenderer.invoke('store:restore-project', id),
   getDataRoot: (): Promise<string> => ipcRenderer.invoke('store:get-data-root'),

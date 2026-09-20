@@ -1,5 +1,6 @@
 import type { Project } from '@/types'
 import type { WizardRuntime } from '@/stores/storyStore'
+import { hasTargetLanguageLeak } from '@/services/languageGuard'
 
 export function projectActivity(project: Project, runtime?: Partial<WizardRuntime>): { label: string; detail: string; color: string; percent: number } {
   const total = project.writingMemory?.totalChapters || project.outline?.chapters.length || 0
@@ -15,6 +16,10 @@ export function projectActivity(project: Project, runtime?: Partial<WizardRuntim
     const label = runtime.isLoadingQuestions ? 'Đang tạo câu hỏi' : runtime.lastAction === 'generateHook' ? 'Đang tạo hook' : runtime.lastAction === 'generateOutline' ? 'Đang tạo dàn ý' : 'Đang viết'
     return result(label, runtime.generationProgress || (draft ? `Chương ${draft.chapterIndex + 1}: đang xử lý bản nháp` : total ? `Đang xử lý chương ${Math.min(completed + 1, total)}/${total}` : 'Đang xử lý'), 'accent')
   }
+  if (draft?.lastError) return result('Gặp lỗi', `${checkpoint} · ${draft.lastError}`, 'error')
+  if (hasTargetLanguageLeak(project.generatedStory || '', project.language, project.customLanguage) || hasTargetLanguageLeak(draft?.text || '', project.language, project.customLanguage)) return result('Sai ngôn ngữ', 'Nội dung đã lưu không khớp ngôn ngữ được chọn · giữ nguyên bản gốc, cần kiểm tra trước khi viết tiếp', 'error')
+  if (project.longStory?.error) return result('Cần kiểm tra', project.longStory.error, 'error')
+  if (project.durationIssue) return result('Cần kiểm tra', project.durationIssue, 'error')
   if (project.writingMemory || draft || project.status === 'writing') return result('Tạm dừng', checkpoint || 'Không có tác vụ đang chạy · mở dự án để tiếp tục', 'warning')
   if (project.status === 'done') return result('Hoàn thành', 'Truyện đã xong · sẵn sàng tải về', 'success')
   if (project.status === 'questions') return result('Chờ trả lời', 'Chờ trả lời câu hỏi hoặc tạo dàn ý', 'text-muted')

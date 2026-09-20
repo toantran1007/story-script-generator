@@ -22,6 +22,7 @@ import {
   waitOwnerIdle,
   clearCancel,
   isCancelled,
+  extractModelIds,
   CancelledError
 } from '@/services/apiService'
 import {
@@ -40,16 +41,26 @@ import {
 import { checkDuplicate } from '@/services/similarityCheck'
 import { findForbiddenFingerprints } from '@/services/originalityCheck'
 import { stripNarrationMarkup } from '@/services/textCleanup'
-import { distributeCharBudget, chapterBudgetsFor, chapterOutputBudget, targetCharsFor, hookCharsFor, normalizeDuration, charsPerMinute } from '@/services/textMetrics'
+import { assertNoTextRepetition, findTextRepetitions, TextRepetitionError, repetitionRepairContext } from '@shared/textRepetition'
+import { distributeCharBudget, chapterBudgetsFor, chapterOutputBudget, targetCharsFor, hookCharsFor, normalizeDuration, charsPerMinute, narrationChars, durationAssessment } from '@/services/textMetrics'
 import { hasTargetLanguageLeak } from '@/services/languageGuard'
-import { verifiedHookExcerpt } from '@/services/hookExcerpt'
+import { assertNativeProofread, nativeProofreadPrompt } from '@/services/languageIntegrity'
+import { nativeReviewMessages, assertNativeReviewGate } from '@/services/nativeReviewGate'
+import { chapterLength, lengthRevisionInstruction } from '@/services/chapterLength'
+import { recoverChapter } from '@/services/chapterRecovery'
+import { modelFallback } from '@/services/longStory/modelFallback'
+import { planLongStory, runLongStory } from '@/services/longStory/engine'
+import type { StoryPorts } from '@/services/longStory/types'
+import { parseNarrativeHook } from '@/services/narrativeHook'
+import { authorCharacterTarget } from '@shared/narrationDuration'
 import { WRITING_CONTEXT_CHARS, WRITING_MEMORY_CONTRACT, visibleStoryText, parseWritingResponse, memoryContext,
   WritingResponseError, writingResponseCounts, responseCountLabel } from '@/services/chapterMemory'
 import { applyMemoryPayload } from '@/services/detailedMemory'
 import { CONTINUITY_RULES } from '@/services/continuityRules'
 import { numberedDraft } from '@/services/sentenceEvidence'
-import { applyChapterCorrection, chapterReferenceContext, CHAPTER_CORRECTION_CONTRACT } from '@/services/chapterCorrection'
+import { applyChapterCorrection, chapterReferenceContext, CHAPTER_CORRECTION_CONTRACT, correctionRetryFeedback } from '@/services/chapterCorrection'
 import { restoreWorkspace, writingPreferences, WRITING_PREFERENCE_KEYS, type WritingPreferences, type WorkspaceSession } from '@/services/workspaceSession'
+import { assertCinematicSafety, cinematicSafetyRetryFeedback } from '@/services/cinematicSafety'
 
 // ===== Helpers =====
 function safeParseJSON<T>(text: string): T | null {
@@ -477,6 +488,16 @@ export const useAppStore = create<AppState>((set, get) => {
     const detail = errorDetail(err)
     addLog(pid, 'error', prefix, detail)
     updateRuntimeFor(pid, { error: `${prefix}: ${err instanceof Error ? err.message : String(err)}` })
+    const project = getProjectById(pid)
+    if (project?.pendingChapter) {
+      const key = get().settings.apiKey
+      const message = err instanceof Error ? err.message : 'Lỗi xử lý bản nháp'
+      const lastError = (key ? message.split(key).join('[REDACTED]') : message)
+        .replace(/Bearer\s+\S+/gi, 'Bearer [REDACTED]').slice(0, 1000)
+      updateProjectById(pid, { pendingChapter: { ...project.pendingChapter, lastError } })
+      const saved = getProjectById(pid)
+      if (saved) void window.api.saveProject(saved).catch(() => set({ saveError: 'Không lưu được lỗi của bản nháp. Hãy kiểm tra thư mục dữ liệu.' }))
+    }
   }
 
   // Chuẩn bị chạy một tác vụ mới cho dự án: xoá cờ huỷ còn sót lại từ lần trước
@@ -507,7 +528,25 @@ export const useAppStore = create<AppState>((set, get) => {
     userDirection?: string
     storyNotes?: string
   }): Promise<{ text: string; lastSummary: string; charsWritten: number }> {
-    if (getProjectById(args.pid)?.writingEngine === 'chapter-v2') return writeWholeChapter(args)
+    if (args.language !== 'custom') args = { ...args, customLanguage: '' }
+    if (getProjectById(args.pid)?.writingEngine === 'chapter-v2') {
+      const beforeText = getProjectById(args.pid)!.generatedStory
+      return recoverChapter(async () => {
+        const current = getProjectById(args.pid)
+        if (!current || isCancelled(args.pid)) throw new CancelledError()
+        // A disk write can fail after the chapter was committed in memory.
+        // Retry persistence only: never regenerate or append that chapter twice.
+        if (current.chapterDocuments?.some(d => d.chapter === args.chapterIndex + 1 && d.complete)) {
+          await saveWritingCheckpoint(args.pid)
+          const text = current.generatedStory.slice(beforeText.length)
+          return { text, lastSummary: current.generatedStory.slice(-WRITING_CONTEXT_CHARS), charsWritten: text.length }
+        }
+        return writeWholeChapter(args)
+      }, () => isCancelled(args.pid) || !getProjectById(args.pid), attempt => {
+        updateRuntimeFor(args.pid, { error: null, generationProgress: `Chương ${args.chapterIndex + 1}: tự phục hồi lần ${attempt}/3 từ bản nháp...` })
+        addLog(args.pid, 'warn', `Chương ${args.chapterIndex + 1} gặp lỗi; tự phục hồi lần ${attempt}/3, chưa cần xử lý thủ công`)
+      })
+    }
     const {
       pid, outline, chapterIndex, style, language, previousSummary,
       targetChars, customStyle, customLanguage, inspirationProfile, userDirection, storyNotes, enableHook
@@ -624,10 +663,11 @@ export const useAppStore = create<AppState>((set, get) => {
 
         // Bỏ tiêu đề / nhãn chương / ký hiệu markdown để văn bản đọc được ngay
         if (!result) throw new Error('Không nhận được dữ liệu truyện–memory hợp lệ')
+        assertNoTextRepetition(result.text)
         let cleanChunk = stripNarrationMarkup(result.text)
         if (hasTargetLanguageLeak(cleanChunk, language, customLanguage)) {
-          addLog(pid, 'warn', `Phát hiện khối ${chunk + 1} bị lẫn ngôn ngữ — đang tự sửa`)
-          updateRuntimeFor(pid, { generationProgress: `Đang sửa ngôn ngữ khối ${chunk + 1}...` })
+          addLog(pid, 'warn', `Phát hiện khối ${chunk + 1} sai ngôn ngữ/chính tả — đang tự sửa`)
+          updateRuntimeFor(pid, { generationProgress: `Đang sửa ngôn ngữ/chính tả khối ${chunk + 1}...` })
           const repair = buildLanguageRepairPrompt(cleanChunk, language, customLanguage)
           const repairedResponse = await chat(
             [{ role: 'system', content: `${repair.system}\n\n${WRITING_MEMORY_CONTRACT}\nUpdate the attached memory consistently with any language/name repairs. Do not advance the story.` },
@@ -638,13 +678,14 @@ export const useAppStore = create<AppState>((set, get) => {
           result = parseWritingResponse(repairedResponse)
           const repaired = stripNarrationMarkup(result.text)
           if (hasTargetLanguageLeak(repaired, language, customLanguage)) {
-            throw new Error(`Khối ${chunk + 1} vẫn bị lẫn ngôn ngữ sau khi tự sửa`)
+            throw new Error(`Khối ${chunk + 1} vẫn sai ngôn ngữ/chính tả sau khi tự sửa`)
           }
           cleanChunk = repaired
           updateRuntimeFor(pid, { streamingText: streamPrefix + cleanChunk })
           addLog(pid, 'success', `Đã sửa ngôn ngữ khối ${chunk + 1}`)
         }
         if (!cleanChunk.trim()) throw new Error('Khối truyện rỗng sau làm sạch; chưa lưu khối này.')
+        assertNoTextRepetition(streamPrefix + cleanChunk)
         if (isCancelled(pid) || !getProjectById(pid)) throw new CancelledError()
         // Khối mới thường bắt đầu ngay bằng chữ; nếu không có khoảng trắng ở chỗ nối
         // thì câu cuối khối trước sẽ dính liền câu đầu khối sau. Khi viết tiếp sau khi
@@ -711,6 +752,67 @@ export const useAppStore = create<AppState>((set, get) => {
     return { text: chapterText, lastSummary: (getProjectById(pid)?.generatedStory || chapterText).slice(-WRITING_CONTEXT_CHARS), charsWritten: written }
   }
 
+  function longStoryPorts(pid: string): StoryPorts {
+    const fallback = modelFallback(() => get().settings,
+      async () => extractModelIds(await window.api.testConnection(), get().settings.apiProvider),
+      () => isCancelled(pid) || !getProjectById(pid))
+    return {
+      fallback: fallback.next,
+      read: () => getProjectById(pid), stopped: () => isCancelled(pid),
+      save: async patch => {
+        const project = getProjectById(pid)
+        if (!project) throw new CancelledError()
+        const next = { ...project, ...patch, updatedAt: new Date().toISOString() }
+        await window.api.saveProject(next)
+        if (!getProjectById(pid)) throw new CancelledError()
+        updateProjectById(pid, patch)
+      },
+      chat: (messages, options) => chat(messages, { ...options, ...(fallback.current() ? { model: fallback.current() } : {}) }, pid, 1),
+      stream: async (messages, onChunk, options) => {
+        let finishReason: string | null = null
+        const text = await chatStream(messages, onChunk, { ...options, ...(fallback.current() ? { model: fallback.current() } : {}) }, pid, reason => { finishReason = reason }, 1)
+        return { text, finishReason }
+      },
+      progress: (message, text) => {
+        const project = getProjectById(pid)
+        updateRuntimeFor(pid, { generationProgress: message, ...(text !== undefined ? { streamingText: text } : {}), writtenChapters: project?.longStory?.cursor || 0, totalChapters: project?.longStory?.plan.chapters.length || 0 })
+        if (text === undefined) addLog(pid, 'info', message)
+      }
+    }
+  }
+
+  async function writeLongProject(pid: string): Promise<void> {
+    const runtime = get().runtimes[pid]
+    if (runtime?.isGenerating || runtime?.isCancelling) return
+    const project = getProjectById(pid)
+    if (project?.ideaInputType !== 'idea' && project?.inspirationProfile && !project.originalityReport?.passed && !project.originalityReport?.usableWithWarning) {
+      updateRuntimeFor(pid, { error: 'Dàn ý chưa vượt kiểm định nguồn; hãy kiểm tra dàn ý trước khi tiếp tục.' }); return
+    }
+    beginTask(pid)
+    updateRuntimeFor(pid, { isGenerating: true, error: null, lastAction: 'confirmAndWrite', streamingText: getProjectById(pid)?.generatedStory || '' })
+    try {
+      await runLongStory(longStoryPorts(pid))
+      if (!isCancelled(pid)) await generateHookForProject(pid)
+    } catch (error) { reportFailure(pid, error, 'Viết truyện dài thất bại') }
+    finally { clearCancel(pid); updateRuntimeFor(pid, { isGenerating: false, isCancelling: false }) }
+  }
+
+  async function saveWritingCheckpoint(pid: string): Promise<void> {
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      const project = getProjectById(pid)
+      if (!project || isCancelled(pid)) throw new CancelledError()
+      try { await window.api.saveProject(project); return }
+      catch (error) {
+        if (attempt === 3) {
+          const failure = new Error(`Không lưu được sau 3 lần. Cần xử lý thủ công trước khi viết tiếp. ${error instanceof Error ? error.message : String(error)}`)
+          failure.name = 'CheckpointSaveError'
+          throw failure
+        }
+        addLog(pid, 'warn', `Lưu bản nháp lỗi; thử lại ${attempt + 1}/3, không gọi AI`)
+      }
+    }
+  }
+
   async function writeWholeChapter(args: Parameters<typeof writeChapterChunked>[0]): Promise<{ text: string; lastSummary: string; charsWritten: number }> {
     const { pid, chapterIndex, outline } = args
     const project = getProjectById(pid)
@@ -728,26 +830,30 @@ export const useAppStore = create<AppState>((set, get) => {
     })
     let draft = project.pendingChapter?.chapterIndex === chapterIndex ? project.pendingChapter.text : ''
     let truncated = Boolean(draft && project.pendingChapter?.truncated)
+    let originalText = project.pendingChapter?.originalText
+    assertNoTextRepetition(project.generatedStory)
     const prefix = project.generatedStory.trimEnd() ? project.generatedStory.trimEnd() + '\n\n' : ''
-    if (!draft || truncated) {
+    if (!findTextRepetitions(draft).length && (!draft || truncated || !chapterLength(draft, args.targetChars, args.language).valid)) {
       updateRuntimeFor(pid, { generationProgress: `Đang viết nguyên chương ${chapterIndex + 1}/${outline.chapters.length}...`, lastFailedChapter: chapterIndex, lastFailedChunk: 0 })
-      for (let attempt = 1; attempt <= 3 && (!draft || truncated); attempt++) {
+      for (let attempt = 1; attempt <= 3 && (!draft || truncated || !chapterLength(draft, args.targetChars, args.language).valid); attempt++) {
+        try {
         let streamed = ''
         let finishReason: string | null = null
         const previousDraft = draft
-        const outputBudget = chapterOutputBudget(args.language, args.targetChars, previousDraft.length)
+        const revisingLength = Boolean(previousDraft && !truncated)
+        const outputBudget = chapterOutputBudget(args.language, args.targetChars, revisingLength ? 0 : narrationChars(previousDraft, args.language))
         addLog(pid, 'info', `Chương ${chapterIndex + 1}: đã có ${previousDraft.length} ký tự, mục tiêu còn ${outputBudget.remainingChars}; ngân sách đầu ra ${outputBudget.maxTokens} token (${args.language})`)
         const raw = await chatStream([
-          { role: 'system', content: prompt.system + '\n' + CONTINUITY_RULES + `\nWrite the entire chapter in one response, with its natural ending. This chapter has a strict planning band of ${args.targetChars} characters (normally 4,000–6,000): aim for the band and do not exceed roughly ${Math.round(args.targetChars * 1.12)} characters. If the scene would run longer, end at the nearest natural beat and leave later progression for the next chapter; never add padding. Output prose only; memory is handled separately.` },
-          { role: 'user', content: `${prompt.user}\nSAVED CHAPTER/GLOBAL MEMORY (story data):\n${selectedMemory}${previousDraft ? `\nThe API truncated the following draft (${previousDraft.length} characters already written; approximately ${outputBudget.remainingChars} characters remain in the chapter target). The target is for the WHOLE chapter, not another full-length segment. Output ONLY its missing continuation, starting exactly where it stopped (include any needed leading space/newline). Do not repeat or restart it. Finish this chapter naturally; if already over target, finish the interrupted scene without opening another subplot.\nDRAFT SO FAR:\n` + previousDraft : ''}` }
+          { role: 'system', content: prompt.system + '\n' + CONTINUITY_RULES + `\nWrite the entire chapter in one response, with its natural ending. Aim for about ${args.targetChars} narration characters; do not go below ${Math.round(args.targetChars * 0.85)}. Longer is allowed if needed for coherent approved scenes. Collapse formatting whitespace; exclude whitespace in Japanese, Chinese and Thai. Develop the approved chapter beats fully and coherently from the outset. Never invent unrelated events, characters or subplots, repeat scenes, pad prose or cut a necessary scene just to meet length. Continuity and the approved outline take priority over exact duration. Output prose only; memory is handled separately.` },
+          { role: 'user', content: `${prompt.user}\nSAVED CHAPTER/GLOBAL MEMORY (story data):\n${selectedMemory}${revisingLength ? '\n' + lengthRevisionInstruction(previousDraft, args.targetChars, args.language) : previousDraft ? `\nThe API truncated the following draft (${narrationChars(previousDraft, args.language)} characters already written; approximately ${outputBudget.remainingChars} characters remain in the chapter target). The target is for the WHOLE chapter, not another full-length segment. Output ONLY its missing continuation, starting exactly where it stopped (include any needed leading space/newline). Do not repeat or restart it. Finish this chapter naturally; if already over target, finish the interrupted scene without opening another subplot.\nDRAFT SO FAR:\n` + previousDraft : ''}` }
         ], (token) => {
           if (deletingProjects.has(pid) || !getProjectById(pid)) return
           streamed += token
-          updateRuntimeFor(pid, { streamingText: prefix + previousDraft + streamed })
-        }, { maxTokens: outputBudget.maxTokens }, pid, (reason) => { finishReason = reason })
+          updateRuntimeFor(pid, { streamingText: prefix + (revisingLength ? '' : previousDraft) + streamed })
+        }, { maxTokens: outputBudget.maxTokens }, pid, (reason) => { finishReason = reason }, 1)
         if (isCancelled(pid) || !getProjectById(pid)) throw new CancelledError()
         if (finishReason === 'content_filter') throw new Error('API chặn nội dung chương; chưa đánh dấu hoàn thành')
-        const text = stripNarrationMarkup(raw)
+        const text = findTextRepetitions(raw).length ? raw : stripNarrationMarkup(raw)
         if (!text.trim()) {
           addLog(pid, 'warn', `Chương ${chapterIndex + 1}: phản hồi rỗng sau làm sạch (${raw.length} ký tự), lần ${attempt}/3`)
           continue
@@ -758,36 +864,69 @@ export const useAppStore = create<AppState>((set, get) => {
           addLog(pid, 'warn', message)
           continue
         }
-        draft = previousDraft + (previousDraft && /^\s/.test(raw) ? raw.match(/^\s+/)![0] : '') + text.trim()
+        if (revisingLength && !originalText) originalText = previousDraft
+        draft = revisingLength ? text.trim() : previousDraft + (previousDraft && /^\s/.test(raw) ? raw.match(/^\s+/)![0] : '') + text.trim()
         truncated = finishReason === 'length'
-        updateProjectById(pid, { pendingChapter: { chapterIndex, text: draft, truncated } })
-        await window.api.saveProject(getProjectById(pid)!)
+        updateProjectById(pid, { pendingChapter: { chapterIndex, text: draft, truncated, originalText } })
+        await saveWritingCheckpoint(pid)
+        if (findTextRepetitions(draft).length) break // Keep the original; repair before accepting/counting it.
         if (truncated) addLog(pid, 'warn', `API cắt dở chương ${chapterIndex + 1} (${draft.length} ký tự đã lưu); sẽ viết nối, không viết lại`)
+        } catch (error) {
+          if (error instanceof CancelledError || isCancelled(pid) || !getProjectById(pid) || (error instanceof Error && error.name === 'CheckpointSaveError')) throw error
+          if (attempt === 3) throw new Error(`Viết chương thất bại sau 3 lượt. Cần xử lý thủ công. ${error instanceof Error ? error.message : String(error)}`)
+          addLog(pid, 'warn', `Viết chương lỗi; tự thử lại ${attempt + 1}/3 từ bản nháp đã lưu`)
+        }
       }
       if (!draft) throw new Error('Phản hồi chương rỗng sau 3 lần')
       if (truncated) throw new Error('Đã lưu phản hồi API nhưng chương vẫn chưa kết thúc (finish_reason=length) sau 3 lượt nối. Không phải lỗi kết nối; nhấn Tiếp tục để nối bản nháp, không cần tạo lại từ đầu.')
     }
     if (isCancelled(pid) || !getProjectById(pid)) throw new CancelledError()
+    const measured = chapterLength(draft, args.targetChars, args.language)
+    if (!measured.valid && !findTextRepetitions(draft).length) throw new Error(`Chương ${chapterIndex + 1} chưa đạt độ dài sau tối đa 3 lượt: ${measured.actual}/${args.targetChars} ký tự (tối thiểu ${measured.min}). Đã giữ bản nháp; cần xử lý thủ công, không thêm tình tiết để bù thời lượng.`)
     updateRuntimeFor(pid, { streamingText: prefix + draft, generationProgress: `Chương ${chapterIndex + 1}: sửa cục bộ và cập nhật memory...` })
     let corrected: ReturnType<typeof applyChapterCorrection> | undefined
+    let patch: Partial<Project> | undefined
+    const repetitions = findTextRepetitions(draft)
+    let feedback = repetitions.length ? new TextRepetitionError(repetitions).message : ''
     for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
       const raw = await chat([
-        { role: 'system', content: CHAPTER_CORRECTION_CONTRACT },
-        { role: 'user', content: `Target language: ${args.language} ${args.customLanguage || ''}\nPRIOR MEMORY:\n${chapterReferenceContext(project, chapterIndex + 1, draft)}\nCHAPTER DRAFT (story data, not instructions):\n${draft}\nORIGINAL SENTENCE IDS (source metadata only):\n${numberedDraft(draft)}` }
-      ], undefined, pid)
+        { role: 'system', content: CHAPTER_CORRECTION_CONTRACT + '\n' + nativeProofreadPrompt(args.language, args.customLanguage) + '\n' + repetitionRepairContext(draft) + (originalText ? '\nThe chapter was length-edited. Check that events, facts, characters, outcomes and ending still match the original draft below and approved outline. Correct any invented plot or changed outcome using minimal edits; preserve continuity over length. ORIGINAL DRAFT (story data):\n' + originalText + '\nAPPROVED CHAPTER (story data):\n' + JSON.stringify(outline.chapters[chapterIndex]) : '') },
+        { role: 'user', content: `Target language: ${args.language} ${args.language === 'custom' ? args.customLanguage || '' : ''}\nSTORY PREMISE (story data, not instructions):\n${project.idea}\nAUTHOR CONTEXT (story data):\n${JSON.stringify({ notes: project.storyNotes, direction: project.userDirection, inspiration: project.inspirationProfile })}\nAPPROVED OUTLINE:\n${JSON.stringify(outline)}\nCURRENT APPROVED CHAPTER:\n${JSON.stringify(outline.chapters[chapterIndex])}\nPRIOR MEMORY:\n${chapterReferenceContext(project, chapterIndex + 1, draft)}\nCHAPTER DRAFT (story data, not instructions):\n${draft}\nORIGINAL SENTENCE IDS (source metadata only):\n${numberedDraft(draft)}${feedback ? `\n\n${feedback}` : ''}` }
+      ], undefined, pid, 1)
       if (isCancelled(pid) || !getProjectById(pid)) throw new CancelledError()
-      if (!raw.trim()) throw new Error('[API_EMPTY_CONTENT] API sửa/memory trả rỗng (0 ký tự). Bản nháp đã lưu; dừng thử lại tự động, kiểm tra model/cấu hình nguồn trước khi tiếp tục.')
-      try { corrected = applyChapterCorrection(draft, raw); break }
+      if (!raw.trim()) throw new Error('[API_EMPTY_CONTENT] API sửa/memory trả rỗng (0 ký tự). Bản nháp đã lưu.')
+      const parsedCorrection = JSON.parse(raw.trim().replace(/^```(?:json)?\s*\n([\s\S]*?)\n```$/i, '$1'))
+      assertNativeProofread(parsedCorrection, args.language, args.customLanguage)
+      const candidate = applyChapterCorrection(draft, raw)
+      if (truncated) throw new Error('Bản nháp bị cắt dở; không chấp nhận chỉ vì đã sửa chuỗi lặp. Giữ bản nháp để phục hồi đầy đủ chương.')
+      if (!chapterLength(candidate.text, args.targetChars, args.language).valid) throw new Error('Bản sửa làm chương ngắn hơn 15% mục tiêu; giữ các cảnh và chỉ sửa tối thiểu.')
+      if (hasTargetLanguageLeak(candidate.text, args.language, args.customLanguage)) throw new Error('Bản sửa chương vẫn lẫn ngôn ngữ')
+      assertCinematicSafety(candidate.text)
+      patch = applyMemoryPayload(getProjectById(pid)!, chapterIndex + 1, 0, true, candidate.text, candidate.memory)
+      updateRuntimeFor(pid, { generationProgress: `Chương ${chapterIndex + 1}: đọc kiểm tra bản ngữ độc lập...` })
+      const independent = await chat(nativeReviewMessages(project, chapterIndex + 1, { text: candidate.text, original: draft, edits: parsedCorrection.edits }), { maxTokens: 6000, temperature: 0.1 }, pid, 1)
+      if (isCancelled(pid) || !getProjectById(pid)) throw new CancelledError()
+      assertNativeReviewGate(independent, project, candidate.text)
+      corrected = candidate
+      break
+      }
       catch (error) {
-        if (!(error instanceof SyntaxError || error instanceof WritingResponseError)) throw error
-        if (attempt === 3) throw new Error(`Phản hồi sửa/memory sai cấu trúc sau 3 lần (${raw.length} ký tự). ${error.message}`)
-        addLog(pid, 'warn', `Phản hồi sửa/memory sai cấu trúc (${raw.length} ký tự), thử lại ${attempt + 1}/3; không viết lại chương`)
+        if (error instanceof CancelledError || isCancelled(pid) || !getProjectById(pid)) throw error
+        const message = error instanceof Error ? error.message : String(error)
+        feedback = correctionRetryFeedback(error instanceof SyntaxError || error instanceof WritingResponseError ? error : { code: 'memory_validation' })
+        if (message.includes('lẫn ngôn ngữ')) feedback += '\nCorrect target-language leakage using minimal edits.'
+        if (message.includes('ngắn hơn')) feedback += '\nYour edits made the chapter shorter than the required minimum. Preserve the draft scenes and expand only approved beats.'
+        if (message.startsWith('Memory id')) feedback += `\n${message}`
+        const safetyFeedback = cinematicSafetyRetryFeedback(error)
+        if (safetyFeedback) feedback += `\n${safetyFeedback}`
+        if (attempt === 3) throw new Error(`Sửa/memory thất bại sau 3 lần. Cần xử lý thủ công; bản nháp đã giữ nguyên. ${message}`)
+        updateRuntimeFor(pid, { generationProgress: `Chương ${chapterIndex + 1}: tự sửa/memory lần ${attempt + 1}/3...` })
+        addLog(pid, 'warn', `Sửa/memory lỗi; thử lại ${attempt + 1}/3; không viết lại chương`)
       }
     }
-    if (!corrected) throw new Error('Không nhận được bản sửa/memory hợp lệ; bản nháp đã lưu')
-    if (hasTargetLanguageLeak(corrected.text, args.language, args.customLanguage)) throw new Error('Bản sửa chương vẫn lẫn ngôn ngữ; đã giữ bản nháp để tiếp tục')
+    if (!corrected || !patch) throw new Error('Không nhận được bản sửa/memory hợp lệ; bản nháp đã lưu')
     const current = getProjectById(pid)!
-    const patch = applyMemoryPayload(current, chapterIndex + 1, 0, true, corrected.text, corrected.memory)
     const lastSummary = corrected.text.slice(-WRITING_CONTEXT_CHARS)
     const chapterText = (current.generatedStory && !current.generatedStory.endsWith('\n\n') ? '\n\n' : '') + corrected.text
     updateProjectById(pid, { ...patch, pendingChapter: null, generatedStory: current.generatedStory + chapterText,
@@ -795,16 +934,25 @@ export const useAppStore = create<AppState>((set, get) => {
         currentChapter: chapterIndex + 1, currentChunk: 0, chapterCharsWritten: 0, lastContext: lastSummary,
         lastWriteAt: new Date().toISOString() } : null })
     updateRuntimeFor(pid, { streamingText: prefix + corrected.text })
-    await window.api.saveProject(getProjectById(pid)!)
-    addLog(pid, 'success', `Chương ${chapterIndex + 1}: ${corrected.text.length} ký tự; đã sửa cục bộ và lưu memory, không kiểm tra AI lần hai`)
+    await saveWritingCheckpoint(pid)
+    addLog(pid, 'success', `Chương ${chapterIndex + 1}: ${corrected.text.length} ký tự; đã qua lượt kiểm tra bản ngữ độc lập và lưu memory`)
     return { text: chapterText, lastSummary, charsWritten: corrected.text.length }
   }
 
   async function finalizeStory(pid: string): Promise<void> {
     const project = getProjectById(pid)
     if (!project?.generatedStory.trim()) return
+    assertNoTextRepetition(project.generatedStory)
+    assertCinematicSafety(project.generatedStory)
     if (isCancelled(pid)) throw new CancelledError()
-    updateProjectById(pid, { writingMemory: null, status: 'done', outlinePhase: 'done' })
+    const duration = durationAssessment(project.generatedStory, project.duration, project.language, project.readingSpeed)
+    if (!chapterLength(project.generatedStory, duration.target, project.language).valid) {
+      const message = `Chưa đạt thời lượng tối thiểu: khoảng ${Math.round(duration.minutes)} / ${project.duration} phút (không ngắn hơn 15%). Nội dung đã lưu; cần kiểm tra thủ công dàn ý/tốc độ đọc, không tự nối thêm sau kết thúc.`
+      updateProjectById(pid, { durationIssue: message })
+      await saveWritingCheckpoint(pid)
+      throw new Error(message)
+    }
+    updateProjectById(pid, { writingMemory: null, status: 'done', outlinePhase: 'done', durationIssue: null })
     addLog(pid, 'success', 'Đã viết xong và lưu memory các chương — không gọi rà soát toàn truyện')
     const saved = getProjectById(pid)
     if (saved) await window.api.saveProject(saved)
@@ -815,6 +963,14 @@ export const useAppStore = create<AppState>((set, get) => {
   async function generateHookForProject(pid: string, force = false): Promise<void> {
     const project = getProjectById(pid)
     if (!project?.generatedStory.trim() || project.enableHook === false || (!force && project.hookText.trim())) return
+    if (hasTargetLanguageLeak(project.generatedStory, project.language, project.customLanguage)) {
+      updateRuntimeFor(pid, { error: 'Truyện đã lưu sai ngôn ngữ được chọn; chưa tạo hook để tránh lan lỗi. Bản gốc được giữ nguyên.', lastAction: 'generateHook' }); return
+    }
+    try { assertCinematicSafety(project.generatedStory) }
+    catch (error) {
+      updateRuntimeFor(pid, { error: `Truyện còn cảnh cần chuyển thể điện ảnh an toàn; chưa tạo hook. ${error instanceof Error ? error.message : String(error)}`, lastAction: 'generateHook' })
+      return
+    }
 
     if (isCancelled(pid)) throw new CancelledError()
     updateRuntimeFor(pid, {
@@ -831,35 +987,45 @@ export const useAppStore = create<AppState>((set, get) => {
       const source = project.generatedStory.length <= maxHookSourceChars
         ? project.generatedStory
         : `${project.generatedStory.slice(0, maxHookSourceChars / 2)}\n\n[...phần giữa truyện được rút gọn để giữ giới hạn ngữ cảnh...]\n\n${project.generatedStory.slice(-maxHookSourceChars / 2)}`
+      const hookReference = (authorCharacterTarget(2, project.language) ?? 0) / 2 || (project.longStory
+        ? project.longStory.plan.duration.targetCharacters / project.longStory.plan.duration.estimatedMinutes
+        : charsPerMinute(project.language, project.readingSpeed))
+      const hookBudget = Math.min(4000, Math.max(200, Math.round(hookReference * 2)))
       const prompt = buildPostStoryHookPrompt(
         source,
         project.style,
         project.language,
-        Math.min(4_000, Math.max(800, hookCharsFor(project.language, project.readingSpeed))),
+        hookBudget,
         project.customStyle,
         project.customLanguage,
         project.inspirationProfile,
-        charsPerMinute(project.language, project.readingSpeed)
+        hookReference
       )
       let hook = ''
+      let hookFeedback = ''
       for (let attempt = 1; attempt <= 3; attempt++) {
+        try {
         const response = await chat(
-          [{ role: 'system', content: prompt.system }, { role: 'user', content: prompt.user }],
-          { temperature: 0.1 }, pid
+          [{ role: 'system', content: prompt.system }, { role: 'user', content: prompt.user + (hookFeedback ? `\n\nLOCAL VALIDATION FAILED: ${hookFeedback}\nReturn the complete corrected JSON, using only the supplied story.` : '') }],
+          { temperature: 0.4 }, pid, 1
         )
         if (isCancelled(pid) || !getProjectById(pid)) throw new CancelledError()
-        try {
-          hook = verifiedHookExcerpt(project.generatedStory, response, Math.min(4000, Math.max(800, hookCharsFor(project.language, project.readingSpeed))))
+          hook = parseNarrativeHook(project.generatedStory, response, hookBudget, project.language, project.customLanguage)
           break
         } catch (error) {
-          addLog(pid, 'warn', `Hook lần ${attempt}/3 không khớp nguyên văn truyện`)
+          if (isCancelled(pid) || error instanceof CancelledError || !getProjectById(pid)) throw new CancelledError()
+          hookFeedback = error instanceof Error ? error.message : 'Phản hồi hook không hợp lệ'
+          const key = get().settings.apiKey
+          if (key) hookFeedback = hookFeedback.split(key).join('[REDACTED]')
+          hookFeedback = hookFeedback.replace(/Bearer\s+\S+/gi, 'Bearer [REDACTED]').slice(0, 700)
+          addLog(pid, 'warn', `Hook lần ${attempt}/3 chưa hợp lệ`, hookFeedback)
           if (attempt === 3) throw error
         }
       }
       if (getProjectById(pid)?.generatedStory !== project.generatedStory || getProjectById(pid)?.enableHook === false) throw new CancelledError()
 
       updateProjectById(pid, { hookText: hook })
-      addLog(pid, 'success', `Đã tạo hook từ cảnh nổi bật (${hook.length.toLocaleString()} ký tự)`)
+      addLog(pid, 'success', `Đã biên soạn hook 1–2 phút từ cảnh nổi bật (${hook.length.toLocaleString()} ký tự; thời lượng ước tính)`)
       const saved = getProjectById(pid)
       if (saved) await window.api.saveProject({ ...saved, updatedAt: new Date().toISOString() })
     } catch (err) {
@@ -885,7 +1051,7 @@ export const useAppStore = create<AppState>((set, get) => {
       try {
         const restored = await window.api.restoreProject(id) as Project
         deletingProjects.delete(id)
-        const project = recoverStaleProject({ ...createEmptyProject(restored.id, restored.name), ...restored })
+        const project = recoverStaleProject({ ...createEmptyProject(restored.id, restored.name), ...restored, writingEngine: restored.writingEngine })
         set((s) => ({ projects: [...s.projects.filter((p) => p.id !== id), project],
           trashedProjects: s.trashedProjects.filter((p) => p.id !== id), saveError: null }))
         get().openProject(id)
@@ -929,6 +1095,7 @@ export const useAppStore = create<AppState>((set, get) => {
           return recoverStaleProject({
             ...createEmptyProject(project.id, project.name),
             ...project,
+            writingEngine: project.writingEngine,
             projectType: 'new' as const,
             idea: migratedIdea,
             ideaInputType: project.ideaInputType === 'outline' ? 'outline' : 'idea',
@@ -1059,7 +1226,6 @@ export const useAppStore = create<AppState>((set, get) => {
 
     deleteProject: async (id) => {
       if (deletingProjects.has(id) || !get().projects.some((p) => p.id === id)) return
-      if (window.api.confirmDeleteProject && !await window.api.confirmDeleteProject(id)) return
       deletingProjects.add(id)
       abortOwner(id)
       dirtyProjects.delete(id)
@@ -1110,7 +1276,7 @@ export const useAppStore = create<AppState>((set, get) => {
     setEnableHook: (v) => updateProject({ enableHook: v, ...(v ? {} : { hookText: '' }) }),
     setStyle: (v) => updateProject({ style: v, inspirationProfile: null, originalityReport: null, hookText: '' }),
     setCustomStyle: (v) => updateProject({ customStyle: v, inspirationProfile: null, originalityReport: null, hookText: '' }),
-    setLanguage: (v) => updateProject({ language: v, hookText: '' }),
+    setLanguage: (v) => updateProject({ language: v, ...(v !== 'custom' ? { customLanguage: '' } : {}), hookText: '' }),
     setCustomLanguage: (v) => updateProject({ customLanguage: v, hookText: '' }),
     setDuration: (v) => updateProject({ duration: normalizeDuration(v) }),
     setReadingSpeed: (v) => updateProject({ readingSpeed: Math.max(0, Math.round(v) || 0) }),
@@ -1158,7 +1324,12 @@ export const useAppStore = create<AppState>((set, get) => {
       if (!pid) return
       const p = getProjectById(pid)
       if (!p) return
+      const runtime = get().runtimes[pid]
+      if (runtime?.isGenerating || runtime?.isLoadingQuestions || runtime?.isCancelling) {
+        updateRuntimeFor(pid, { error: 'Hãy Dừng và chờ lưu bản nháp trước khi tạo lại dự án.' }); return
+      }
       updateProjectById(pid, {
+        writingEngine: 'long-v3', longStory: undefined, pendingChapter: null, durationIssue: null,
         currentStep: 1, idea: '',
         inspirationProfile: null, originalityReport: null,
         storyNotes: '', ...writingPreferences(p), writingMemory: null,
@@ -1285,6 +1456,9 @@ export const useAppStore = create<AppState>((set, get) => {
       if (!pid) return
       const p = getProjectById(pid)
       if (!p) return
+      if (p.longStory && (p.longStory.cursor > 0 || p.longStory.draft)) {
+        updateRuntimeFor(pid, { error: 'Đã có chương/bản nháp gắn với kế hoạch này. Hãy tiếp tục hoặc tạo dự án mới; không ghi đè dàn ý đang viết.' }); return
+      }
 
       beginTask(pid)
       updateRuntimeFor(pid, { isGenerating: true, error: null, duplicateResult: null, generationProgress: 'Đang tạo dàn ý cốt truyện...', lastAction: 'generateOutline' })
@@ -1295,6 +1469,31 @@ export const useAppStore = create<AppState>((set, get) => {
       // ghi đè trạng thái mà confirmAndWrite đã đặt (VD: generationProgress 'Hoàn thành!')
       let chainedToWrite = false
       try {
+        if (p.writingEngine === 'long-v3') {
+          const existingStories = get().projects.filter(x => x.id !== pid && x.outlineSummary).slice(0, 40)
+            .map(x => ({ title: x.name, summary: x.outlineSummary.slice(0, 1200) }))
+          const plan = await planLongStory(longStoryPorts(pid), existingStories)
+          if (p.ideaInputType !== 'idea') {
+            if (!p.inspirationProfile) throw new Error('Thiếu hồ sơ nguồn để kiểm tra độ độc lập')
+            const prompt = buildOriginalityAuditPrompt(plan.outline, p.inspirationProfile, p.transformationLevel, 1, p.style, p.customStyle)
+            const raw = await chat([{ role: 'system', content: prompt.system }, { role: 'user', content: prompt.user }], { temperature: 0.1 }, pid, 1)
+            const parsed = parseOriginalityReport(raw, 1)
+            if (!parsed) throw new Error('Phản hồi kiểm tra độ độc lập không hợp lệ')
+            const report = normalizeOriginalityReport(parsed, p.transformationLevel, findForbiddenFingerprints(plan.outline, p.inspirationProfile))
+            updateProjectById(pid, { originalityReport: report })
+            if (!report.passed && !report.usableWithWarning) throw new Error('Dàn ý chưa đạt kiểm định nguồn; hãy chỉnh hướng dẫn rồi lập lại')
+          }
+          addLog(pid, 'success', `AI đã lập ${plan.chapters.length} chương · ${plan.duration.targetCharacters.toLocaleString()} ký tự · ~${plan.duration.estimatedMinutes} phút (ước tính AI)`)
+          const duplicate = checkDuplicate(plan.outline.outlineSummary, get().projects.filter(x => x.id !== pid).map(x => ({ id: x.id, title: x.name, outlineSummary: x.outlineSummary })))
+          updateRuntimeFor(pid, { duplicateResult: duplicate })
+          if (duplicate.isDuplicate) addLog(pid, 'warn', 'Dàn ý gần với dự án đã lưu; dừng tự viết để kiểm tra')
+          if (p.autoFlow && !duplicate.isDuplicate && !isCancelled(pid)) {
+            updateRuntimeFor(pid, { isGenerating: false })
+            chainedToWrite = true
+            await writeLongProject(pid)
+          }
+          return
+        }
         const qaList = p.questions.map((q, i) => ({
           question: q,
           answer: p.answers[i] || '(AI sẽ tự quyết định)'
@@ -1352,7 +1551,7 @@ export const useAppStore = create<AppState>((set, get) => {
 
             if (hasTargetLanguageLeak(outlineLanguageText(candidate), p.language, p.customLanguage)) {
               addLog(pid, 'warn', 'Phát hiện dàn ý bị lẫn ngôn ngữ — đang tự sửa trước khi kiểm tra')
-              updateRuntimeFor(pid, { generationProgress: 'Đang sửa ngôn ngữ dàn ý...' })
+              updateRuntimeFor(pid, { generationProgress: 'Đang sửa ngôn ngữ/chính tả dàn ý...' })
               const repair = buildLanguageRepairPrompt(JSON.stringify(candidate), p.language, p.customLanguage, 'outline-json')
               const repairedResp = await chat(
                 [{ role: 'system', content: repair.system }, { role: 'user', content: repair.user }],
@@ -1550,6 +1749,7 @@ export const useAppStore = create<AppState>((set, get) => {
         addLog(pid, 'warn', 'Đã chặn viết vì dàn ý chưa đạt kiểm định độc lập')
         return
       }
+      if (p.writingEngine === 'long-v3') { await writeLongProject(pid); return }
       const outline = p.outline
       const now = new Date().toISOString()
 
@@ -1574,7 +1774,7 @@ export const useAppStore = create<AppState>((set, get) => {
       })
       updateProjectById(pid, {
         generatedStory: '', hookText: '', preReviewStory: undefined, chapterMemories: [], storyMemory: null, chapterDocuments: [], memoryRecords: [], memoryHistory: [], memoryPackets: [], memoryIssues: [], outlinePhase: 'writing', status: 'writing',
-        writingEngine: 'chapter-v2', pendingChapter: null,
+        writingEngine: 'chapter-v2', pendingChapter: null, durationIssue: null,
         writingMemory: memory
       })
       // Hạn mức ký tự tính từ thời lượng + tốc độ đọc (tự khai hoặc mặc định theo ngôn ngữ),
@@ -1658,6 +1858,7 @@ export const useAppStore = create<AppState>((set, get) => {
       if (!pid) return
       const p = getProjectById(pid)
       if (!p || !p.outline) return
+      if (p.writingEngine === 'long-v3') { await writeLongProject(pid); return }
       const outline = p.outline
 
       // Determine resume point: prefer persisted writingMemory, fallback to runtime
@@ -1681,7 +1882,9 @@ export const useAppStore = create<AppState>((set, get) => {
 
       if (startChapter >= outline.chapters.length) {
         addLog(pid, 'info', 'Tất cả chương đã hoàn thành')
-        await finalizeStory(pid)
+        beginTask(pid)
+        try { await finalizeStory(pid) }
+        catch (error) { reportFailure(pid, error, 'Chưa thể hoàn tất truyện') }
         return
       }
 
@@ -1810,7 +2013,9 @@ export const useAppStore = create<AppState>((set, get) => {
         case 'generateOutline': return get().generateOutline()
         case 'confirmAndWrite': return get().continueWriting()
         case 'generateHook': return get().regenerateHook()
-        default: addLog(pid, 'warn', 'Không có hành động nào để thử lại')
+        default:
+          if (getProjectById(pid)?.longStory && getProjectById(pid)?.outline) return get().continueWriting()
+          addLog(pid, 'warn', 'Không có hành động nào để thử lại')
       }
     },
 

@@ -1,18 +1,7 @@
 import fs from 'node:fs'
-import ts from 'typescript'
+import { createLoader } from './lib/load-local-ts.mjs'
 
-function loadTypeScriptModule(path) {
-  const source = fs.readFileSync(path, 'utf8')
-  const output = ts.transpileModule(source, {
-    compilerOptions: {
-      module: ts.ModuleKind.CommonJS,
-      target: ts.ScriptTarget.ES2022
-    }
-  }).outputText
-  const module = { exports: {} }
-  new Function('module', 'exports', 'require', output)(module, module.exports, (id) => id === '@/services/textMetrics' ? loadTypeScriptModule('src/renderer/src/services/textMetrics.ts') : {})
-  return module.exports
-}
+const loadTypeScriptModule = createLoader()
 
 function assert(condition, message) {
   if (!condition) throw new Error(message)
@@ -307,7 +296,7 @@ assert(postStoryHook.system.includes('Never invent a new scene'), 'post-producti
 assert(postStoryHook.system.includes('Do not reveal the final resolution'), 'post-production hook protects the ending')
 assert(postStoryHook.system.includes('DIRECT SERIALIZED SCRIPT STYLE'), 'post-production hook follows direct serialized prose')
 assert(
-  prompts.buildOutlinePrompt('idea', 'dramatic', 'vi', 17, [], []).system.includes('3060-3740'),
+  prompts.buildOutlinePrompt('idea', 'dramatic', 'vi', 17, [], []).system.includes('15300 narration characters'),
   'arbitrary duration produces a proportional outline length target'
 )
 

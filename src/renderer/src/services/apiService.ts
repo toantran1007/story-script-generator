@@ -148,11 +148,12 @@ function isRetryableError(err: unknown): boolean {
 export async function chat(
   messages: ChatMessage[],
   options?: ChatOptions,
-  owner?: string
+  owner?: string,
+  maxAttempts = MAX_RETRIES + 1
 ): Promise<string> {
   let lastError: unknown
   let attempts = 0
-  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
     attempts = attempt + 1
     if (owner && isCancelled(owner)) throw new CancelledError()
 
@@ -167,7 +168,7 @@ export async function chat(
       if (owner && isCancelled(owner)) throw new CancelledError()
       lastError = err
       // Only retry on timeout/server errors, not on 4xx client errors
-      if (!isRetryableError(err) || attempt === MAX_RETRIES) break
+      if (!isRetryableError(err) || attempt === maxAttempts - 1) break
       const delayMs = RETRY_DELAY_MS * (attempt + 1)
       console.warn(
         `[API] Attempt ${attempt + 1} failed, retrying in ${delayMs}ms...`,
@@ -186,11 +187,12 @@ export async function chatStream(
   onChunk: (chunk: string) => void,
   options?: ChatOptions,
   owner?: string,
-  onFinish?: (reason: string | null) => void
+  onFinish?: (reason: string | null) => void,
+  maxAttempts = MAX_RETRIES + 1
 ): Promise<string> {
   let lastError: unknown
   let attempts = 0
-  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
     attempts = attempt + 1
     if (owner && isCancelled(owner)) throw new CancelledError()
 
@@ -208,7 +210,7 @@ export async function chatStream(
     } catch (err) {
       if (owner && isCancelled(owner)) throw new CancelledError()
       lastError = err
-      if (!isRetryableError(err) || attempt === MAX_RETRIES) break
+      if (!isRetryableError(err) || attempt === maxAttempts - 1) break
       const delayMs = RETRY_DELAY_MS * (attempt + 1)
       console.warn(`[API Stream] Attempt ${attempt + 1} failed, retrying in ${delayMs}ms...`)
       await sleep(delayMs)

@@ -147,8 +147,10 @@ export interface WritingMemory {
 export type ProjectType = 'new' | 'rewrite'
 
 export interface Project {
-  writingEngine?: 'chapter-v2'
-  pendingChapter?: { chapterIndex: number; text: string; truncated?: boolean } | null
+  longStory?: import('@/services/longStory/types').LongStoryState
+  durationIssue?: string | null
+  writingEngine?: 'chapter-v2' | 'long-v3'
+  pendingChapter?: { chapterIndex: number; text: string; truncated?: boolean; lastError?: string; originalText?: string } | null
   id: string
   name: string
   projectType: ProjectType
@@ -216,6 +218,7 @@ export interface Project {
 
 export function createEmptyProject(id: string, name: string, projectType: ProjectType = 'new'): Project {
   return {
+    writingEngine: 'long-v3',
     id,
     name,
     projectType,

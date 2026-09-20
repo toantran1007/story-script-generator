@@ -6,6 +6,8 @@ import { readFile } from 'fs/promises'
 import { writeFileSync, existsSync } from 'fs'
 import { autoUpdater } from 'electron-updater'
 import { formatStoryWithHook } from '../shared/storyFormatting'
+import { exportStoryJSON } from '../shared/storyExport'
+import { assertNoTextRepetition } from '../shared/textRepetition'
 import { ProjectFileStore } from './projectFiles'
 import { readChatResponse } from './chatResponse'
 import { readChatStream } from './chatStream'
@@ -421,13 +423,6 @@ ipcMain.handle('file:read-txt', async () => {
   return { name: filePath.split(/[\\/]/).pop() || 'script.txt', content, bytes: file.length }
 })
 
-ipcMain.handle('store:confirm-delete-project', async (_event, id: string) => {
-  const project = files().list().find((p) => p.id === id)
-  if (!project) return true // A committed deletion may need retrying after a filesystem error.
-  const answer = await dialog.showMessageBox({ type: 'warning', buttons: ['Xoá dự án', 'Hủy'], defaultId: 1, cancelId: 1,
-    message: `Xoá vĩnh viễn dự án “${project.name}”?`, detail: 'Tác vụ đang chạy sẽ dừng. Truyện, memory và bản sao lưu nội bộ của dự án sẽ bị xoá khỏi máy, không thể khôi phục. File đã xuất ra nơi khác không bị xoá.' })
-  return answer.response === 0
-})
 ipcMain.handle('store:delete-project', (_event, id: string) => { files().remove(id); return [] })
 ipcMain.handle('store:get-deleted-projects', () => files().listDeleted())
 ipcMain.handle('store:restore-project', (_event, id: string) => files().restore(id))
@@ -479,19 +474,19 @@ ipcMain.handle('store:delete-custom-language', (_event, lang: string) => {
 
 // Export project story
 ipcMain.handle('store:export-story', async (_event, project: ProjectRecord, format: string) => {
-  const ext = format === 'md' ? 'md' : 'txt'
+  assertNoTextRepetition(project.generatedStory || '')
+  assertNoTextRepetition(project.hookText || '')
+  const ext = format === 'json' ? 'json' : format === 'md' ? 'md' : 'txt'
   const title = project.name || 'story'
   const result = await dialog.showSaveDialog({
     defaultPath: `${title}.${ext}`,
-    filters: [{ name: format === 'md' ? 'Markdown' : 'Text', extensions: [ext] }]
+    filters: [{ name: format === 'json' ? 'JSON' : format === 'md' ? 'Markdown' : 'Text', extensions: [ext] }]
   })
 
   if (result.canceled || !result.filePath) return false
 
   let content = formatStoryWithHook(project.generatedStory, project.hookText, project.language)
-  if (format === 'md') {
-    content = `# ${title}\n\n> Style: ${project.style} | Language: ${project.language} | Duration: ${project.duration} min\n\n---\n\n${content}`
-  }
+  if (format === 'json') content = exportStoryJSON(project)
 
   writeFileSync(result.filePath, content, 'utf-8')
   return true
@@ -504,6 +499,7 @@ ipcMain.handle('api:test-connection', async (_event, override?: Partial<Settings
 
   const response = await fetch(url, {
     method: 'GET',
+    signal: AbortSignal.timeout(15000),
     cache: 'no-store',
     headers: {
       Accept: 'application/json',

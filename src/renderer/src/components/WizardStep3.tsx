@@ -1,9 +1,10 @@
 import { useAppStore } from '@/stores/storyStore'
 import { StopButton } from '@/components/StopButton'
 import { LogPanel } from '@/components/LogPanel'
-import { countText, readingMinutes, targetCharsFor, distributeCharBudget } from '@/services/textMetrics'
+import { countText, readingMinutes, targetCharsFor, chapterBudgetsFor, durationAssessment } from '@/services/textMetrics'
 import type { JSX } from 'react'
 import { formatSentenceLines, formatStoryWithHook } from '@shared/storyFormatting'
+import { estimateWrittenDuration, roundedMinutes } from '@shared/narrationDuration'
 
 function OutlineReview(): JSX.Element {
   const p = useAppStore((s) => s.getActiveProject())
@@ -16,8 +17,8 @@ function OutlineReview(): JSX.Element {
   if (!p || !p.outline) return <div />
 
   // Hạn mức thật khi viết: suy từ thời lượng + tốc độ đọc, không phải estimatedWords của AI
-  const budgets = distributeCharBudget(p.outline.chapters, p.duration, p.language, p.readingSpeed)
-  const totalChars = targetCharsFor(p.duration, p.language, p.readingSpeed)
+  const budgets = p.longStory?.plan.chapters.map(ch => ch.targetCharacters) || chapterBudgetsFor(p.outline.chapters.length, targetCharsFor(p.duration, p.language, p.readingSpeed))
+  const totalChars = p.longStory?.plan.duration.targetCharacters || targetCharsFor(p.duration, p.language, p.readingSpeed)
 
   return (
     <div className="wizard" style={{ maxWidth: 800 }}>
@@ -107,7 +108,7 @@ function OutlineReview(): JSX.Element {
         <div className="outline-header__meta">
           <span>📖 {p.outline.chapters.length} chương</span>
           <span>📝 ~{totalChars.toLocaleString()} ký tự</span>
-          <span>⏱ ~{p.duration} phút đọc</span>
+          <span>⏱ {p.duration} phút mục tiêu{p.longStory ? ' · kế hoạch ước tính AI' : ''}</span>
         </div>
       </div>
 
@@ -228,9 +229,12 @@ function StoryOutput(): JSX.Element {
   const displayedHook = formatSentenceLines(p.hookText, p.language)
   const bodyText = !runtime.isGenerating && displayedHook && displayText.startsWith(displayedHook)
     ? displayText.slice(displayedHook.length).trimStart() : displayText
-  const { value: wordCount, unit } = countText(displayText, p.language)
-  const readMinutes = readingMinutes(displayText, p.language, p.readingSpeed)
-  const targetChars = targetCharsFor(p.duration, p.language, p.readingSpeed)
+  const measurementText = runtime.isGenerating && !proseReady ? runtime.streamingText : p.generatedStory
+  const { value: wordCount, unit } = countText(measurementText, p.language)
+  const timing = estimateWrittenDuration(p, measurementText)
+  const readMinutes = timing.minutes !== null ? roundedMinutes(timing.minutes) : p.longStory ? null : readingMinutes(measurementText, p.language, p.readingSpeed)
+  const duration = durationAssessment(measurementText, p.duration, p.language, p.readingSpeed)
+  const targetChars = p.longStory?.plan.duration.targetCharacters || targetCharsFor(p.duration, p.language, p.readingSpeed)
 
   const handleExport = async (format: string, includeHook = true): Promise<void> => {
     await exportProject(p.id, format, includeHook)
@@ -241,7 +245,7 @@ function StoryOutput(): JSX.Element {
     navigator.clipboard.writeText(completeStory)
   }
 
-  const hasFailed = !!runtime.error && !runtime.isGenerating
+  const hasFailed = !!(runtime.error || p.durationIssue || p.longStory?.error) && !runtime.isGenerating
   const hookFailed = hasFailed && runtime.lastAction === 'generateHook'
   const unverifiedMemoryCount = (p.memoryRecords || []).filter((record) => record.verificationIssue && !record.source.verified).length
 
@@ -335,7 +339,7 @@ function StoryOutput(): JSX.Element {
 
       {p.hookText && (
         <section className="story-output__hook" aria-label="Hook mở đầu">
-          <div className="story-output__hook-title">🪝 Hook mở đầu từ cảnh nổi bật</div>
+          <div className="story-output__hook-title">🪝 Hook biên soạn từ cảnh nổi bật · khoảng 1–2 phút</div>
           <div className="story-output__hook-text">{displayedHook}</div>
         </section>
       )}
@@ -351,14 +355,32 @@ function StoryOutput(): JSX.Element {
       </div>
 
       {p.pendingChapter && !runtime.isGenerating && <div className="resume-banner" role="status">
-        Đã lưu bản nháp chương {p.pendingChapter.chapterIndex + 1} ({p.pendingChapter.text.length.toLocaleString()} ký tự), {p.pendingChapter.truncated ? 'chờ viết nối phần bị API cắt dở' : 'chờ sửa cục bộ/memory'}. Nhấn Tiếp tục để xử lý bản nháp này, không viết lại chương.
+        {p.pendingChapter.lastError && <div role="alert" style={{ color: 'var(--error)' }}>Lỗi lần trước: {p.pendingChapter.lastError}</div>}
+        Đã lưu bản nháp chương {p.pendingChapter.chapterIndex + 1} ({p.pendingChapter.text.length.toLocaleString()} ký tự), {p.pendingChapter.truncated ? 'chờ viết nối phần bị API cắt dở' : 'chờ kiểm tra độ dài/sửa cục bộ/memory'}. Nhấn Tiếp tục để xử lý bản nháp; không viết lại chương đã hoàn thành. Nếu độ dài chưa đạt, chỉ biên tập các cảnh đã có, không thêm tình tiết mới.
+        {p.pendingChapter.originalText && <details><summary>Bản nháp gốc trước khi chỉnh độ dài</summary><div style={{ whiteSpace: 'pre-wrap' }}>{p.pendingChapter.originalText}</div></details>}
       </div>}
+      {p.durationIssue && !runtime.isGenerating && <div role="alert" style={{ color: 'var(--error)' }}>{p.durationIssue}</div>}
+      {p.longStory?.error && !p.pendingChapter && !runtime.isGenerating && <div role="alert" style={{ color: 'var(--error)' }}>{p.longStory.error}</div>}
+      {!!p.longStory?.recoveryHistory?.length && <details className="resume-banner">
+        <summary>Lịch sử tự phục hồi ({p.longStory.recoveryHistory.length} lỗi gần nhất)</summary>
+        {p.longStory.recoveryHistory.slice(-10).map((entry, i) => <div key={`${entry.time}-${i}`}>
+          Chương {entry.chapter} · {entry.stage} · vòng {entry.round}/3, lượt {entry.attempt}/3 · {entry.message}
+          {entry.model ? ` · model dự phòng: ${entry.model}` : ''}{entry.delayMs ? ` · chờ ${entry.delayMs / 1000}s` : ''}
+        </div>)}
+      </details>}
 
       {wordCount > 0 && (
         <div className="story-output__stats">
           <span>📝 {wordCount.toLocaleString()} {unit}</span>
-          <span>⏱ ~{readMinutes} phút đọc</span>
-          <span>🎯 hạn mức {targetChars.toLocaleString()} ký tự / {p.duration} phút</span>
+          <span>⏱ {readMinutes === null ? 'Chưa có ước tính cho phần đang viết' : `Ước tính từ bản đã viết: ~${readMinutes} phút`} · chưa đo TTS</span>
+          {timing.source === 'ai-plan-ratio' && <span>Ước tính theo tỷ lệ độ dài/kế hoạch AI đã duyệt, chưa có mốc TTS riêng cho ngôn ngữ này.</span>}
+          <span>Yêu cầu: {p.duration} phút</span>
+          {p.longStory && <span>Kế hoạch ban đầu (ước tính bởi AI): {p.longStory.plan.duration.estimatedMinutes} phút</span>}
+          <span>{duration.chars.toLocaleString()} ký tự tính thời lượng (bỏ khoảng trắng định dạng)</span>
+          <span>🎯 mục tiêu {targetChars.toLocaleString()} ký tự / {p.duration} phút · không ngắn hơn 15%, có thể dài hơn</span>
+          {proseReady && !p.longStory && duration.outsideTolerance && <span role="alert" style={{ color: 'var(--warning)' }}>
+            Thời lượng ngắn hơn {Math.abs(duration.deviationPercent)}% so với mục tiêu. Truyện đã kết thúc; không tự thêm hoặc cắt nội dung. Hãy kiểm tra dàn ý nếu cần điều chỉnh.
+          </span>}
           {p.outline && <span>📖 {p.outline.chapters.length} chương</span>}
           {!!p.chapterMemories?.length && <span>Đã lưu memory {p.chapterMemories.filter((m) => m.complete).length} chương</span>}
         </div>
@@ -387,6 +409,7 @@ function StoryOutput(): JSX.Element {
             <button className="btn btn--secondary" onClick={handleCopy}>📋 Sao chép</button>
             <button className="btn btn--secondary" onClick={() => handleExport('md')}>📄 Xuất .md</button>
             <button className="btn btn--secondary" onClick={() => handleExport('txt')}>📄 Xuất .txt</button>
+            <button className="btn btn--secondary" onClick={() => handleExport('json')}>📄 Xuất .json</button>
             <button className="btn btn--secondary" onClick={regenerateOutline}>🔄 Tạo lại từ đầu</button>
             <button className="btn btn--ghost" onClick={resetWizard}>+ Truyện mới</button>
           </>

@@ -4,6 +4,7 @@ import { countText } from '@/services/textMetrics'
 import { STYLE_LABELS, LANGUAGE_LABELS } from '@/types'
 import type { Project } from '@/types'
 import { projectActivity } from '@/services/projectActivity'
+import { estimateWrittenDuration, roundedMinutes } from '@shared/narrationDuration'
 
 function formatDate(iso: string): string {
   const d = new Date(iso)
@@ -65,6 +66,7 @@ export function Dashboard(): JSX.Element {
         <div className="dashboard__grid">
           {sorted.map((project: Project) => {
             const activity = projectActivity(project, runtimes?.[project.id])
+            const timing = estimateWrittenDuration(project)
             return (
             <div
               key={project.id}
@@ -98,7 +100,9 @@ export function Dashboard(): JSX.Element {
               <div className="dashboard-card__meta">
                 <span>{STYLE_LABELS[project.style]?.vi || project.style}</span>
                 <span>{LANGUAGE_LABELS[project.language]}</span>
-                <span>{project.duration} phút</span>
+                <span>Yêu cầu: {project.duration} phút</span>
+                {timing.minutes !== null && <span>Ước tính từ bản đã viết: ~{roundedMinutes(timing.minutes)} phút</span>}
+                {timing.source === 'ai-plan-ratio' && <span>Theo tỷ lệ kế hoạch AI · chưa đo TTS</span>}
               </div>
 
               <div className="dashboard-card__progress">

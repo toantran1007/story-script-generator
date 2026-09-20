@@ -1,12 +1,7 @@
 import type { DuplicateResult } from '@/types'
 
-// Ngưỡng Jaccard trên tập từ nội dung (đã bỏ hư từ) để coi 2 cốt truyện là trùng.
-// Hiệu chỉnh trên tóm tắt thật do AI sinh:
-//   - trùng nguyên văn                : 100%
-//   - cùng cốt truyện, viết lại khác  : ~29%
-//   - cùng thể loại, cốt khác         : ~4.5%
-//   - khác hoàn toàn                  : ~3-5%
-// 0.15 nằm giữa hai cụm nên tách bạch được, không quá nhạy cũng không bỏ sót.
+// Lexical warning only, NOT a calibrated semantic/plagiarism probability.
+// CJK/Thai use script-local bigrams; spaced languages retain word tokens.
 export const DUPLICATE_THRESHOLD = 0.15
 
 // Hư từ tiếng Việt + tiếng Anh. Bỏ đi để độ giống phản ánh nội dung,
@@ -23,14 +18,19 @@ const STOPWORDS = new Set(
 function normalize(text: string): string {
   return text
     .toLowerCase()
-    .replace(/[^\p{L}\p{N}\s]/gu, '')
+    .replace(/[^\p{L}\p{M}\p{N}\s]/gu, '')
     .replace(/\s+/g, ' ')
     .trim()
 }
 
 /** Tập từ mang nghĩa của một đoạn văn. */
 function contentWords(text: string): Set<string> {
-  const words = normalize(text).split(' ')
+  const normalized = normalize(text)
+  const words = normalized.split(' ').flatMap(word => {
+    if (!/[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Thai}]/u.test(word)) return [word]
+    const chars = Array.from(word)
+    return chars.length === 1 ? chars : chars.slice(0, -1).map((char, i) => char + chars[i + 1])
+  })
   const set = new Set<string>()
   for (const w of words) {
     if (w && !STOPWORDS.has(w)) set.add(w)

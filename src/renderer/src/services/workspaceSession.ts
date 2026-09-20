@@ -22,7 +22,7 @@ export function writingPreferences(source?: Partial<Project> | null): WritingPre
     style: value.style && Object.hasOwn(STYLE_LABELS, value.style) ? value.style : base.style,
     customStyle: typeof value.customStyle === 'string' ? value.customStyle : '',
     language: value.language && Object.hasOwn(LANGUAGE_LABELS, value.language) ? value.language : base.language,
-    customLanguage: typeof value.customLanguage === 'string' ? value.customLanguage : '',
+    customLanguage: value.language === 'custom' && typeof value.customLanguage === 'string' ? value.customLanguage : '',
     duration: normalizeDuration(value.duration ?? base.duration),
     enableHook: typeof value.enableHook === 'boolean' ? value.enableHook : base.enableHook,
     readingSpeed: typeof value.readingSpeed === 'number' && Number.isFinite(value.readingSpeed) ? Math.max(0, value.readingSpeed) : 0,

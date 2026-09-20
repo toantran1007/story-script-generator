@@ -3,27 +3,12 @@ import { useAppStore } from '@/stores/storyStore'
 import { StopButton } from '@/components/StopButton'
 import { LogPanel } from '@/components/LogPanel'
 import {
-  targetCharsFor,
-  chapterCountFor,
-  charsPerMinute,
-  READING_SPEED_MIN,
-  READING_SPEED_MAX,
   DURATION_MIN,
   DURATION_MAX,
   normalizeDuration
 } from '@/services/textMetrics'
 import type { StoryStyle, Language, TransformationLevel } from '@/types'
 import { STYLE_LABELS, LANGUAGE_LABELS } from '@/types'
-
-function getLengthEstimate(minutes: number, language: Language, readingSpeed?: number): string {
-  const chars = targetCharsFor(minutes, language, readingSpeed)
-  if (chars >= 1000) return `~${(chars / 1000).toFixed(1)}k ký tự`
-  return `~${chars} ký tự`
-}
-
-function getChapterEstimate(minutes: number, language: Language, readingSpeed?: number): string {
-  return `~${chapterCountFor(targetCharsFor(minutes, language, readingSpeed))} chương`
-}
 
 export function WizardStep1(): JSX.Element {
   const p = useAppStore((s) => s.getActiveProject())
@@ -33,7 +18,7 @@ export function WizardStep1(): JSX.Element {
   const savedLanguages = useAppStore((s) => s.savedLanguages)
   const {
     setIdea, setIdeaInputType, setTransformationLevel, setStoryNotes, setAutoFlow, setEnableHook, setStyle, setCustomStyle, setLanguage,
-    setCustomLanguage, setDuration, setReadingSpeed, setMode,
+    setCustomLanguage, setDuration, setMode,
     generateQuestions,
     clearError, setSettingsOpen,
     saveCustomStylePreset, deleteCustomStylePreset,
@@ -179,7 +164,7 @@ export function WizardStep1(): JSX.Element {
           </label>
           <div className="form-hint">
             {p.enableHook !== false
-              ? 'Sau khi viết xong toàn bộ, tool sẽ chọn một cảnh thật nổi bật trong truyện và biên tập thành hook liên kết với mạch truyện.'
+              ? 'Sau khi viết xong, tool tóm tắt và biên soạn cảnh hay nhất thành hook giữ người xem khoảng 1–2 phút đầu; không bịa thêm tình tiết hay lộ kết cục.'
               : 'Truyện sẽ bắt đầu tự nhiên theo bối cảnh và nhân vật, không tạo hook hậu kỳ.'}
           </div>
         </div>
@@ -358,41 +343,11 @@ export function WizardStep1(): JSX.Element {
           <span className="duration-value">phút</span>
         </div>
         <div className="duration-estimate">
-          {getLengthEstimate(p.duration, p.language, p.readingSpeed)} · {getChapterEstimate(p.duration, p.language, p.readingSpeed)}
+          AI sẽ lập kế hoạch độ dài và số chương theo ngôn ngữ · không ngắn hơn 15%, có thể dài hơn để giữ mạch truyện
           {p.duration >= 30 && ' · Sinh từng chương để đảm bảo chất lượng'}
         </div>
         <div className="form-hint">
           Nhập số phút mong muốn, từ {DURATION_MIN} đến {DURATION_MAX} phút.
-        </div>
-      </div>
-
-      {/* Tốc độ đọc — quyết định số ký tự cho mỗi phút thời lượng */}
-      <div className="form-group">
-        <label className="form-label">
-          🗣 Tốc độ đọc: {charsPerMinute(p.language, p.readingSpeed).toLocaleString()} ký tự/phút
-          {p.readingSpeed ? ' (tự khai)' : ' (mặc định theo ngôn ngữ)'}
-        </label>
-        <div className="duration-control">
-          <input
-            className="form-input"
-            type="number"
-            min={READING_SPEED_MIN}
-            max={READING_SPEED_MAX}
-            step={50}
-            placeholder={`Mặc định: ${charsPerMinute(p.language)}`}
-            value={p.readingSpeed || ''}
-            onChange={(e) => setReadingSpeed(Number(e.target.value) || 0)}
-            style={{ maxWidth: 200 }}
-          />
-          {!!p.readingSpeed && (
-            <button className="btn btn--ghost btn--sm" onClick={() => setReadingSpeed(0)}>
-              ↺ Dùng mặc định
-            </button>
-          )}
-        </div>
-        <div className="form-hint">
-          Số ký tự đọc thành tiếng trong 1 phút. Độ dài truyện = thời lượng × tốc độ này.
-          Để trống nếu không rõ. Cách đo nhanh: đọc to một đoạn trong 1 phút rồi đếm ký tự đã đọc.
         </div>
       </div>
 

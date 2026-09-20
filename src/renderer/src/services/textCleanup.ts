@@ -1,3 +1,4 @@
+import { plainNarration } from '@shared/plainNarration'
 // Dọn văn bản truyện cho mục đích đọc/lồng tiếng:
 // bỏ tiêu đề, nhãn chương, ký hiệu markdown — giữ lời kể và thoại trực tiếp.
 
@@ -54,7 +55,6 @@ function sanitizeForVoice(line: string): string {
   // hoàn chỉnh thì giữ chữ, chỉ bỏ dấu ngoặc.
   s = s.replace(/[(（\[［]([^)）\]］]*)[)）\]］]/g, (_m, inner: string) => {
     const t = String(inner).trim()
-    if (t.length <= 60 && !/[.!?…]/.test(t)) return ''
     return ` ${t} `
   })
   // Ngoặc lẻ còn sót
@@ -114,7 +114,7 @@ export function stripNarrationMarkup(text: string): string {
     if (CHAPTER_LABEL.test(trimmed)) continue
     if (isAllCapsTitle(trimmed)) continue
 
-    const voiced = sanitizeForVoice(line)
+    const voiced = plainNarration(sanitizeForVoice(line))
     if (voiced === '') continue
     kept.push(voiced)
   }

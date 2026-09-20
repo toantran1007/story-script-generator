@@ -1,3 +1,4 @@
+import { proseFixture } from './lib/prose-fixture.mjs'
 import fs from 'node:fs'
 import path from 'node:path'
 import assert from 'node:assert/strict'
@@ -7,8 +8,8 @@ import ts from 'typescript'
 const require = createRequire(import.meta.url)
 const root = path.resolve('src/renderer/src')
 const transpile = (source) => ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText
-export function harness(responses = [], chats = [], engine = 'legacy') {
-  const cache = new Map(), saved = [], calls = [], chatCalls = [], previews = [], streamOptions = []
+export function harness(responses = [], chats = [], engine = 'legacy', enforceLength = false, recover = false, gateResponses = []) {
+  const cache = new Map(), saved = [], calls = [], chatCalls = [], gateCalls = [], previews = [], streamOptions = []
   let cancelled = false
   class CancelledError extends Error {}
   const api = {
@@ -29,16 +30,33 @@ export function harness(responses = [], chats = [], engine = 'legacy') {
       onFinish?.(next?.finishReason || 'stop')
       return raw
     },
-    chat: async (messages) => { chatCalls.push(messages); assert(chats.length, 'unexpected summary/audit request'); const next = chats.shift(); if (next instanceof Error) throw next; return typeof next === 'function' ? next(messages) : next }
+    chat: async (messages) => {
+      if (messages[0].content.startsWith('INDEPENDENT LANGUAGE GATE:')) {
+        gateCalls.push(messages)
+        const next = gateResponses.shift()
+        if (next instanceof Error) throw next
+        return typeof next === 'function' ? next(messages) : next || JSON.stringify({ language: JSON.parse(messages[1].content).language, complete: true, chapterReview: { complete: true, noRepeatedCompletion: true, noPrematureCompletion: true, knowledgeConsistent: true }, issues: [], unresolved: [] })
+      }
+      chatCalls.push(messages); assert(chats.length, 'unexpected summary/audit request'); const next = chats.shift(); if (next instanceof Error) throw next; return typeof next === 'function' ? next(messages) : next
+    }
   }
   function load(file) {
     if (cache.has(file)) return cache.get(file).exports
     const module = { exports: {} }; cache.set(file, module)
     new Function('module', 'exports', 'require', 'setTimeout', 'clearTimeout', transpile(fs.readFileSync(file, 'utf8')))(
       module, module.exports, (id) => {
+        if (id.startsWith('@shared/')) return load(path.resolve('src/shared', `${id.slice(8)}.ts`))
         if (id === '@/services/apiService') return api
-        if (!id.startsWith('@/')) return require(id)
-        const target = path.join(root, id.slice(2))
+        // Phase-level suites assert the inner limit; recovery has its own integration suite.
+        if (id === '@/services/chapterRecovery' && !recover) return { recoverChapter: run => run() }
+        // Existing memory tests use tiny prose fixtures, independent of duration.
+        // Duration integration tests explicitly enable the real length policy.
+        if (id === '@/services/chapterLength' && !enforceLength) {
+          const actual = load(path.join(root, 'services/chapterLength.ts'))
+          return { ...actual, chapterLength: (...args) => ({ ...actual.chapterLength(...args), valid: true }) }
+        }
+        if (!id.startsWith('@/') && !id.startsWith('.')) return require(id)
+        const target = id.startsWith('.') ? path.resolve(path.dirname(file), id) : path.join(root, id.slice(2))
         return load(fs.existsSync(`${target}.ts`) ? `${target}.ts` : path.join(target, 'index.ts'))
       }, () => 1, () => {}
     )
@@ -49,7 +67,7 @@ export function harness(responses = [], chats = [], engine = 'legacy') {
   const hook = load(path.join(root, 'services/hookExcerpt.ts'))
   const { useAppStore: store } = load(path.join(root, 'stores/storyStore.ts'))
   globalThis.window = { api: { saveProject: async (p) => { saved.push(structuredClone(p)); return [] }, exportStory: async () => true } }
-  const project = { ...types.createEmptyProject('test', 'Test'), language: 'vi', duration: 4, enableHook: false,
+  const project = { ...types.createEmptyProject('test', 'Test'), writingEngine: engine === 'legacy' ? undefined : 'chapter-v2', language: 'vi', duration: 4, enableHook: false,
     idea: 'Lan sửa đồng hồ rồi đem trả.', outline: { title: 'The clock', outlineSummary: 'Lan repairs and returns a clock.', chapters: [
       { chapter: 1, title: 'Repair', summary: 'Repair the clock.', estimatedWords: 500 },
       { chapter: 2, title: 'Return', summary: 'Return it.', estimatedWords: 500 }
@@ -64,7 +82,7 @@ export function harness(responses = [], chats = [], engine = 'legacy') {
     } }] })
     await store.getState().continueWriting()
   } })
-  return { store, types, mem, hook, saved, calls, chatCalls, previews, streamOptions, project, load }
+  return { store, types, mem, hook, saved, calls, chatCalls, gateCalls, previews, streamOptions, project, load }
 }
 
 const firstMemory = { chapter: { summary: 'Lan repaired the clock.', events: ['CLOCK_REPAIRED'], state: ['Lan holds the repaired clock at the workshop.'], openThreads: ['Return it to An.'] },
@@ -72,7 +90,7 @@ const firstMemory = { chapter: { summary: 'Lan repaired the clock.', events: ['C
 const secondMemory = { chapter: { summary: 'Lan returned it.', events: ['CLOCK_RETURNED'], state: ['An holds it; Lan is home.'], openThreads: [] },
   story: { facts: ['No magic can repair a clock.', 'An has the clock; Lan is home.'], openThreads: [] } }
 const encode = (text, memory) => `${text}\n<<<STORY_MEMORY_V1>>>\n${JSON.stringify(memory)}`
-const firstText = 'Lan sửa đồng hồ xong.\n“Ta đem trả thôi.”'
+const firstText = 'Lan sửa đồng hồ xong.\nTa đem trả thôi.'
 const secondText = 'Lan trao đồng hồ cho An.\nCô trở về nhà.'
 let app = harness([encode(firstText, firstMemory), encode(secondText, secondMemory)])
 await app.store.getState().confirmAndWrite()
@@ -105,16 +123,16 @@ assert(resumed.calls[0][1].content.includes('CLOCK_REPAIRED'))
 assert.equal(resumed.store.getState().getActiveProject().generatedStory.trim(), `${firstText}\n\n${secondText}`)
 console.log('PASS: persisted chapter memory survives cancellation/restart; completed chapter is not rewritten')
 
-app = harness([encode('A'.repeat(2000), firstMemory), encode(secondText, secondMemory)])
+app = harness([encode(proseFixture(2000), firstMemory), encode(secondText, secondMemory)])
 app.store.setState({ projects: [{ ...app.project, duration: 3, outline: { ...app.project.outline, chapters: app.project.outline.chapters.slice(0, 1) } }] })
 await app.store.getState().confirmAndWrite()
 assert(app.calls[1][1].content.includes('"currentChapter"'))
 assert(app.calls[1][1].content.includes('CLOCK_REPAIRED'))
-assert(!app.calls[1][1].content.includes('A'.repeat(1201)), 'only a short prose tail is forwarded')
+assert(!app.calls[1][1].content.includes(proseFixture(1201)), 'only a short prose tail is forwarded')
 assert.equal(app.store.getState().getActiveProject().chapterMemories.length, 1)
 console.log('PASS: current-chapter memory is updated between chunks; prose context is bounded')
 
-app = harness([encode('A'.repeat(2000), firstMemory), 'CANCEL'])
+app = harness([encode(proseFixture(2000), firstMemory), 'CANCEL'])
 app.store.setState({ projects: [{ ...app.project, duration: 3, outline: { ...app.project.outline, chapters: app.project.outline.chapters.slice(0, 1) } }] })
 await app.store.getState().confirmAndWrite()
 const middle = structuredClone(app.store.getState().getActiveProject())
@@ -126,14 +144,14 @@ await app.store.getState().continueWriting()
 assert.equal(app.calls.length, 1)
 assert(app.calls[0][1].content.includes('CLOCK_REPAIRED'))
 assert.equal(app.store.getState().getActiveProject().chapterMemories[0].complete, true)
-assert.equal(app.store.getState().getActiveProject().generatedStory.trim(), 'A'.repeat(2000) + '\n\n' + secondText)
+assert.equal(app.store.getState().getActiveProject().generatedStory.trim(), proseFixture(2000) + '\n\n' + secondText)
 console.log('PASS: mid-chapter restart uses the accepted chunk memory and does not replay that chunk')
 
-app = harness([encode('A'.repeat(2000), firstMemory), encode('A'.repeat(2000), secondMemory)])
+app = harness([encode(proseFixture(2000), firstMemory), encode(proseFixture(2000), secondMemory)])
 app.store.setState({ projects: [{ ...app.project, duration: 3, outline: { ...app.project.outline, chapters: app.project.outline.chapters.slice(0, 1) } }] })
 await app.store.getState().confirmAndWrite()
 assert.match(app.store.getState().getActiveRuntime().error, /nguyên khối/)
-assert.equal(app.store.getState().getActiveProject().generatedStory, 'A'.repeat(2000))
+assert.equal(app.store.getState().getActiveProject().generatedStory, proseFixture(2000))
 assert.equal(app.store.getState().getActiveProject().memoryPackets.length, 1)
 console.log('PASS: exact repeated chunks are rejected locally without another review API call')
 
@@ -212,23 +230,23 @@ for (const [raw, code] of [
 console.log('PASS: response diagnostics distinguish empty, missing/duplicate separator, invalid JSON/schema and memory size with actual character counts')
 
 for (const bad of ['', JSON.stringify({ story: firstText }), encode(firstText, firstMemory).slice(0, -3)]) {
-  app = harness([bad, encode('L'.repeat(1500), firstMemory)])
+  app = harness([bad, encode(proseFixture(1500), firstMemory)])
   app.store.setState({ projects: [{ ...app.project, idea: 'Isekai xuyên không.', duration: 1, outline: { ...app.project.outline, chapters: app.project.outline.chapters.slice(0, 1) } }] })
   await app.store.getState().confirmAndWrite()
   assert.equal(app.calls.length, 2)
-  assert.equal(app.store.getState().getActiveProject().generatedStory, 'L'.repeat(1500))
+  assert.equal(app.store.getState().getActiveProject().generatedStory, proseFixture(1500))
   assert.equal(app.store.getState().getActiveProject().memoryPackets.length, 1)
   assert.equal(app.store.getState().getActiveRuntime().error, null)
   assert(app.store.getState().getActiveRuntime().logs.some((log) => log.level === 'warn' && log.message.includes(`phản hồi ${bad.length} ký tự`)))
 }
-app = harness(['', '', encode('L'.repeat(1800), firstMemory)])
+app = harness(['', '', encode(proseFixture(1800), firstMemory)])
 app.store.setState({ projects: [{ ...app.project, duration: 1, outline: { ...app.project.outline, chapters: app.project.outline.chapters.slice(0, 1) } }] })
 await app.store.getState().confirmAndWrite()
 assert.equal(app.calls.length, 3)
 assert.equal(app.store.getState().getActiveProject().generatedStory.length, 1800)
 console.log('PASS: malformed/empty responses retry, long valid responses succeed on second/third attempt, rejected attempts never enter story or memory')
 
-app = harness([encode(firstText, firstMemory)], [encode('R'.repeat(1600), firstMemory)])
+app = harness([encode(firstText, firstMemory)], [encode(proseFixture(1600), firstMemory)])
 app.store.setState({ projects: [{ ...app.project, language: 'en', idea: 'Isekai across worlds.', duration: 1,
   outline: { ...app.project.outline, chapters: app.project.outline.chapters.slice(0, 1) } }] })
 await app.store.getState().confirmAndWrite()
@@ -262,6 +280,6 @@ assert.equal(migrated.status, 'done')
 assert.equal(migrated.qualityReviewState, undefined)
 assert.equal(migrated.generatedStory, firstText)
 assert.equal(migrated.preReviewStory, 'Backup.')
-assert.equal(hook.verifiedHookExcerpt(firstText, JSON.stringify({ excerpt: '“Ta đem trả thôi.”' }), 900), '“Ta đem trả thôi.”')
+assert.equal(hook.verifiedHookExcerpt(firstText, JSON.stringify({ excerpt: 'Ta đem trả thôi.' }), 900), 'Ta đem trả thôi.')
 assert.throws(() => hook.verifiedHookExcerpt(firstText, JSON.stringify({ excerpt: 'A new danger appeared.' }), 900))
 console.log('PASS: invalid memory never commits partial state; legacy review flags migrate safely; verbatim hook protection remains')

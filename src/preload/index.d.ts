@@ -15,7 +15,6 @@ interface Api {
   saveWorkspace: (workspace: unknown) => Promise<void>
   flushProjects: (projects: unknown[], workspace?: unknown) => void
   deleteProject: (id: string) => Promise<unknown[]>
-  confirmDeleteProject: (id: string) => Promise<boolean>
   getDeletedProjects: () => Promise<unknown[]>
   restoreProject: (id: string) => Promise<unknown>
   getDataRoot: () => Promise<string>

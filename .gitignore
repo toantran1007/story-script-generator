@@ -2,6 +2,10 @@ node_modules/
 data/
 dist/
 out/
+logs/
+backups/
+live-long-story-*/
+live-continuation-*/
 .gh_token
 .agents/
 FULL_CODEBASE.md

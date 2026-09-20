@@ -15,7 +15,20 @@ export function hasTargetLanguageLeak(
   language: Language,
   customLanguage?: string
 ): boolean {
-  if (!text.trim() || language === 'vi') return false
+  if (!text.trim()) return false
+  if (language !== 'custom') {
+    const letters = (text.match(/\p{L}/gu) || []).length
+    const cyrillic = (text.match(/\p{Script=Cyrillic}/gu) || []).length
+    if (cyrillic >= 8 && cyrillic / Math.max(1, letters) > 0.2) return true
+  }
+  if (language === 'vi') return false
+  const japanese = language === 'ja' || (language === 'custom' && /(?:japanese|tiếng\s*nhật|日本語)/iu.test(customLanguage || ''))
+  if (japanese) {
+    // Detect foreign sentences even when a long Japanese chapter dilutes the ratio.
+    // Single acronyms/proper names are left to contextual proofreading.
+    if (/[A-Za-z]{2,}(?:[ \t\r\n]+[A-Za-z][A-Za-z'’-]*){2,}/u.test(text)) return true
+    if (/\b(?:Thank\s+you|You\s+saved|I\s+love|Oh\s+my)\b/iu.test(text)) return true
+  }
 
   if (isThaiTarget(language, customLanguage)) {
     const thaiCount = (text.match(/\p{Script=Thai}/gu) || []).length

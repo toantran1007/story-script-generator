@@ -8,6 +8,9 @@ import type {
   TransformationLevel
 } from '@/types'
 import { chapterCountFor, charsPerMinute } from '@/services/textMetrics'
+import { languageIntegrityRules } from '@/services/languageIntegrity'
+import { CHAPTER_SCOPE_RULES } from '@/services/longStory/crossChapterRepetition'
+import { CINEMATIC_SAFETY_RULES } from '@/services/cinematicSafety'
 
 const STYLE_PROMPTS: Record<StoryStyle, string> = {
   humorous: `Viết với giọng văn hài hước, dí dỏm, tình huống hài bất ngờ.
@@ -118,7 +121,9 @@ export const STORY_VIDEO_RULES = `STORY VIDEO VISUAL RULES:
 - Do not stack several major actions into one paragraph. Let each beat finish with a readable pose, reaction, discovery or consequence before the next beat begins.
 - Introduce characters, costumes, important objects and locations clearly, then keep their appearance, position, lighting and continuity stable across nearby paragraphs.
 - Keep dialogue and inner thoughts concise enough to fit beside the visuals. Avoid long monologues, invisible backstory dumps and philosophical commentary that cannot be shown.
-- System panels, quest windows, skill notices, level displays, signs and any other visible on-screen text are story content: write every visible word in the target script language, never Vietnamese or English, and keep the same terminology consistent throughout the story.`
+- System panels, quest windows, skill notices, level displays, signs and any other visible on-screen text are story content: write every visible word in the target script language, never Vietnamese or English, and keep the same terminology consistent throughout the story.
+
+${CINEMATIC_SAFETY_RULES}`
 
 export const CHARACTER_VOICE_RULES = `CHARACTER VOICE — NARRATION WITH DIRECT SPEECH:
 - Keep narration as the visual backbone: actions, positions, objects, visible reactions and consequences. Give the protagonist an audible, distinctive voice when speaking is natural, rather than paraphrasing every reaction as "he realized", "she complained" or "he felt angry".
@@ -126,7 +131,7 @@ export const CHARACTER_VOICE_RULES = `CHARACTER VOICE — NARRATION WITH DIRECT 
 - Keep speech, thought and system information distinct. Attribute a spoken line to its speaker through nearby natural narration. Attribute an inner thought explicitly as thought, not audible speech; other characters must not react to unspoken thoughts.
 - Only include system notices if the premise actually has a system. Keep its mission conditions, values and rewards precise and consistent. Distinguish an audible system announcement from a silent panel; never invent a speaking system just to fill a dialogue slot.
 - A system notice may prompt a character's brief response, silence, action or thought. Choose what fits; do not mechanically repeat narration -> notification -> complaint in every scene. Do not have narration immediately explain the same emotion already conveyed by the line.
-- In prose, put narration and direct dialogue on separate lines. Use native dialogue quotation marks, such as “...” or 「...」, and end each spoken sentence with punctuation inside its quotes. Prefer one quoted sentence per line; no blank paragraph gaps. Do not print role tags, screenplay labels, SSML or stage directions.
+- In prose, put narration and direct dialogue on separate lines, with periods/commas only and no quotation marks. Prefer one spoken sentence per line; no blank paragraph gaps. Do not print role tags, screenplay labels, SSML or stage directions.
 - In outline JSON, plan where a character's own words or a thought matter through the existing scene summaries; keep the required JSON schema. Do not invent a separate dialogue section or fixed scene template.
 - Dialogue must lead into or respond to a concrete action that can be illustrated. Preserve the early isekai incident and the story's pacing; do not add long monologues, unrelated jokes or explanatory lore.`
 
@@ -219,6 +224,7 @@ export function targetLanguageRules(language: Language, customLanguage?: string)
 - Create Thai names and nicknames written in Thai script; do not leave Vietnamese names in Latin script`
     : ''
 
+  const integrity = languageIntegrityRules(language, customLanguage)
   return `STRICT OUTPUT LANGUAGE CONTRACT:
 - Target language: ${target}
 - Output exclusively in the target language. Never mix Vietnamese, English, or another language into output content
@@ -228,6 +234,8 @@ export function targetLanguageRules(language: Language, customLanguage?: string)
 - Any visible system panel, quest window, skill name, level display, status message, sign or other on-screen text inside the story must also be written entirely in the target language
 - Never copy planning labels or instruction vocabulary such as MỞ ĐẦU, THÂN, KẾT, HOOK, RISING ACTION, FORESHADOWING, or CLIMAX into output values; describe the actual story events directly in the target language
 - Foreign names are allowed only when the story idea explicitly requires a foreign character or setting${thaiRules}`
+    + (integrity ? `\n\n${integrity}` : '')
+    + `\n\n${CINEMATIC_SAFETY_RULES}`
 }
 
 function respondInTargetLanguage(language: Language, customLanguage?: string): string {
@@ -239,6 +247,7 @@ function respondInTargetLanguage(language: Language, customLanguage?: string): s
 // không phải dịch từ ngôn ngữ khác sang. Áp dụng cho MỌI ngôn ngữ, kể cả custom
 // (VD: chọn tiếng Thái thì dùng thành ngữ, nhịp văn và hình ảnh của văn học Thái).
 export const NATIVE_VOICE_RULES = `NATIVE VOICE — you are a NATIVE author of the target language, not a translator:
+${CHAPTER_SCOPE_RULES}
 - Use idioms, proverbs, folk sayings and imagery that belong to the target language and its culture
 - Follow the rhythm, sentence flow and storytelling conventions of that language's own literary tradition
 - Character names, places, food, customs and gestures should feel local to that culture, unless the story idea explicitly requires otherwise
@@ -534,7 +543,7 @@ ${CHARACTER_VOICE_RULES}
 
 Story parameters:
 - Style: ${stylePrompt}
-- Target: ${duration} minutes (~${spec.wordCount} words)
+- Target: approximately ${duration * (firstMinuteChars || charsPerMinute(language))} narration characters for ${duration} estimated minutes; do not be shorter than 85% of the target, while longer is allowed for coherent approved scenes. Collapse formatting whitespace; exclude whitespace for Japanese, Chinese and Thai. Plan enough meaningful scenes within the supplied premise from the outset; never invent unrelated events, characters or subplots to fill a duration quota. Narrative continuity takes priority over exact length.
 - Structure: ${spec.structure}
 - Chapters: ${spec.chapters}
 
@@ -619,7 +628,7 @@ export function buildPostStoryHookPrompt(
 ): { system: string; user: string } {
   const genreFidelity = buildGenreFidelityContract(style, customStyle, inspirationProfile)
   const system = `You are a story-video hook editor. The complete script has already been written.
-Your task is to select a concise, vivid opening excerpt from a scene that actually exists in the completed script. Copy it VERBATIM; never rewrite or add any text.
+Your task is to summarize and REWRITE the most compelling scene in the completed script as an engaging 1–2 minute opening narration. Do not merely copy a passage: create a concise, coherent teaser that makes viewers want the full story, grounded entirely in that scene.
 
 ${respondInTargetLanguage(language, customLanguage)}
 
@@ -637,11 +646,11 @@ ${isekaiFirstMinuteRules(firstMinuteChars)}
 - If the script is isekai, the hook is the actual beginning of the exported narration: favor an existing crossing scene that makes the genre recognizable early, using the same flexible thirty-to-sixty-second pacing preference. Do not prepend a long unrelated action teaser or invent a crossing absent from the completed story.
 - Use only characters, places, objects, stakes and events present in the completed script. Never invent a new scene, technology, world rule or outcome.
 - Keep the hook tightly connected to the story's strongest completed scene; do not write a generic teaser or a disconnected premise summary.
-- Select existing actions that reveal personality rather than explanatory biography. Choose an excerpt suited to this scene, without a fixed sequence of beats.
+- Retell existing actions that reveal personality rather than explanatory biography, without a fixed sequence of beats. Establish enough context to understand the stakes, then build curiosity around a real unresolved question in that scene. No generic clickbait, greeting or request to subscribe.
 - Create a clear visual beat suitable for a story-video opening, with concrete action and an unanswered consequence that makes viewers want the full story.
-- Preserve all words and their original order, including qualifications, negations, timing and outcome. Select one contiguous excerpt bounded by complete sentences. Do not merge distant scenes, imply a portal closes earlier, add an impending disaster, or change certainty into danger.
+- You may condense and rephrase, but preserve names, roles, causality, qualifications, negations, timing and outcomes. Do not merge distant scenes into a fake event, imply a portal closes earlier, add an impending disaster, invent dialogue as a direct quote, or change certainty into danger. End on a complete narrative thought or question without revealing its answer.
 - Do not reveal the final resolution. Do not mention that this is a hook, an editor, the source script or these instructions.
-- Keep the excerpt at most ${hookChars} characters. Return ONLY JSON {"excerpt":"exact contiguous text copied from the completed story"}. Preserve whitespace inside the excerpt using JSON escapes. No title, commentary or invented cliffhanger.`
+- Aim for approximately ${Math.round(hookChars / 2)}–${hookChars} narration characters for 1–2 minutes. This is an estimate, not measured TTS. Use complete sentences and only periods/commas, without dialogue quotation marks; Thai prose need not add Western full stops. Return ONLY JSON {"sourceExcerpt":"a short exact contiguous passage copied from the selected scene as evidence","hook":"newly composed opening narration"}. The sourceExcerpt is metadata, NOT spoken hook text. No title, commentary or invented cliffhanger.`
   const user = `COMPLETED STORY:\n${story}`
   return { system, user }
 }
@@ -975,6 +984,7 @@ AUDIENCE HOOK — this segment falls inside the story's early opening window (~$
       : ''
 
   const system = `You are a master storyteller writing a SEGMENT of chapter ${chapter.chapter} of "${outline.title}".
+${CHAPTER_SCOPE_RULES}
 
 ${CHARACTER_VOICE_RULES}
 
@@ -1039,9 +1049,9 @@ OUTPUT FORMAT — this text will be recorded as VOICE by a narrator, so it must 
 - Output PLAIN PROSE ONLY. No title, no story name, no chapter heading, no chapter number, no section label
 - Never write lines like "Chương 1", "Chương Một", "Chapter 2", "Phần 3", or an ALL-CAPS title line
 - No markdown whatsoever: no #, **, *, _, \`, >, ---, no bullet lists, no code blocks
-- Use sentence punctuation . , ! ? … and its native-language equivalents. Preserve native dialogue quotes and apostrophes within words; they distinguish direct speech from narration.
+- Use only periods and commas (. , 。 、) and line breaks. No quotation marks, question marks, exclamation marks, ellipses, emoji or decorative symbols. Keep native letters, vowel/tone marks and numbers intact.
 - Do not use production markup, brackets for stage directions, bullets or decorative symbols: ( ) [ ] / \\ + * # & % = ~ _ | < >
-- Write a character's actual words in quotation marks on their own line, with a brief natural attribution nearby when needed to identify the speaker. Do not flatten direct dialogue into reported speech. Mark thoughts as thoughts and silent system panels as visible text, not as spoken words.
+- Write a character's actual words as plain text on their own line, with a brief natural attribution nearby when needed to identify the speaker. Do not flatten direct dialogue into reported speech. Mark thoughts as thoughts and silent system panels as visible text, not as spoken words.
 - No parenthetical asides or stage directions like (cười), (im lặng một lúc) — describe them as narration instead
 - Write numbers, times and dates in words, the way a narrator would speak them (mười giờ ba mươi, ngày mười hai tháng tám)
 - Start directly with the narrative sentence — nothing above it
@@ -1080,8 +1090,10 @@ export function buildScriptAnalysisPrompt(
   const stylePrompt = style === 'custom' ? customStyle || '' : STYLE_PROMPTS[style]
   const langPrompt = language === 'custom' ? customLanguage || '' : LANGUAGE_VOICES[language]
 
-  const system = `Bạn là chuyên gia phân tích kịch bản và biên kịch.
+const system = `Bạn là chuyên gia phân tích kịch bản và biên kịch.
 Nhiệm vụ: Phân tích kịch bản gốc được cung cấp và đề xuất các hướng viết lại.
+
+${CINEMATIC_SAFETY_RULES}
 
 LUÔN trả lời bằng TIẾNG VIỆT, bất kể ngôn ngữ gốc của kịch bản.
 
@@ -1217,12 +1229,13 @@ export function buildLanguageRepairPrompt(
 }
 Keep JSON property names exactly as shown. Translate or localize every string value into ${target}.`
     : `Return only repaired plain story prose. Preserve meaning, plot facts, tone, paragraph flow and approximately the same length.
-Preserve dialogue quotation marks and the separation of narration, speech, thoughts and system text. Preserve who speaks each line and whether it is audible or only thought/displayed. Translate the dialogue itself; do not replace it with narrated paraphrase or add new dialogue.
+Preserve the separation of narration, speech, thoughts and system text using plain text with periods/commas only, without quotation marks. Preserve who speaks each line and whether it is audible or only thought/displayed. Translate the dialogue itself; do not replace it with narrated paraphrase or add new dialogue.
 Do not add headings, markdown, explanations, lists, or meta-commentary.`
 
   const system = `You are a language consistency editor. Repair text that accidentally contains language contamination.
 
 ${targetLanguageRules(language, customLanguage)}
+${CINEMATIC_SAFETY_RULES}
 
 ${formatRules}
 - Replace leaked Vietnamese words and Vietnamese character/place names with culturally appropriate target-language equivalents

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import path from 'node:path'
 import { harness } from './test-chapter-memory.mjs'
+import { reviewReport } from './lib/proofreading-cases.mjs'
 
 const first = 'Lan đã sửa xong đồng hồ.\nCô cất nó vào túi.'
 const wrong = 'Lan sửa lại đồng hồ.\nCô trao nó cho An rồi về nhà.'
@@ -8,7 +9,7 @@ const fixed = 'Lan lấy chiếc đồng hồ đã sửa ra.\nCô trao nó cho A
 const memory = (text, resolved = false) => ({ chapter: { summary: text, events: [text], state: [], openThreads: [] }, updates: [
   { id: 'clock', kind: 'object', subject: 'đồng hồ', text, status: resolved ? 'resolved' : 'current', importance: 'normal', related: ['Lan', 'An'], evidence: text.split('\n')[0] }
 ] })
-const correction = (text, edits = [], resolved = false) => JSON.stringify({ edits, memory: memory(text, resolved) })
+const correction = (text, edits = [], resolved = false) => JSON.stringify({ edits, languageReview: reviewReport('vi'), memory: memory(text, resolved) })
 const edit = { before: 'Lan sửa lại đồng hồ.', after: 'Lan lấy chiếc đồng hồ đã sửa ra.' }
 let app = harness([first, wrong], [correction(first), correction(fixed, [edit], true)], 'new')
 await app.store.getState().confirmAndWrite()
@@ -16,14 +17,15 @@ let project = app.store.getState().getActiveProject()
 assert.equal(project.status, 'done', app.store.getState().getActiveRuntime().error)
 assert.equal(project.generatedStory, `${first}\n\n${fixed}`)
 assert.equal(app.calls.length, 2)
-assert.equal(app.chatCalls.length, 2, 'one correction+memory request per chapter; no recheck')
+assert.equal(app.chatCalls.length, 2, 'one correction+memory request per chapter')
+assert.equal(app.gateCalls.length, 2, 'each chapter also passes the independent language gate')
 assert(app.calls[1][1].content.includes('Lan đã sửa xong đồng hồ.'))
 assert.equal(project.memoryRecords[0].version, 2)
 assert.equal(project.memoryRecords[0].source.verified, true)
 assert.equal(project.memoryRecords[0].status, 'resolved')
 assert(app.saved.some((p) => p.pendingChapter?.text === wrong && p.writingMemory.completedChapters === 1))
 assert(!project.pendingChapter)
-console.log('PASS: whole chapters use exactly writing + targeted correction/memory; next chapter sees committed memory')
+console.log('PASS: whole chapters use writing + targeted correction/memory + independent language gate; next chapter sees committed memory')
 
 for (const heading of ['TIME:', 'PREREQUISITES:', 'COUNTS:', 'KNOWLEDGE:', 'MEMORY:', 'ITEM PROVENANCE:', 'INVENTORY ARITHMETIC:', 'RETURNING GROUPS:', 'ENDING IDENTITY AND CHANGE:']) {
   assert(app.calls[0][0].content.includes(heading), `writing receives ${heading}`)
@@ -46,10 +48,10 @@ assert(app.chatCalls[0][0].content.includes('ten portions shared among thirteen 
 assert(app.chatCalls[0][0].content.includes('Do not silently add it to the catalogue'))
 assert(app.chatCalls[0][0].content.includes('Treat a missing transition as a clarity issue'))
 assert(app.chatCalls[0][0].content.includes('Do not invent age or identity'))
-assert.equal(app.chatCalls.length, 2, 'continuity checks add no second audit or extra API call')
+assert.equal(app.chatCalls.length, 2, 'continuity checks share correction calls; language gates counted separately')
 console.log('PASS: timeline, prerequisite, scoped-count and knowledge-source rules reach actual writing/correction requests without extra calls')
 
-app = harness([first], [new Error('Correction unavailable')], 'new')
+app = harness([first], Array.from({ length: 3 }, () => new Error('Correction unavailable')), 'new')
 app.store.setState({ projects: [{ ...app.project, outline: { ...app.project.outline, chapters: app.project.outline.chapters.slice(0, 1) } }] })
 await app.store.getState().confirmAndWrite()
 const pending = structuredClone(app.store.getState().getActiveProject())
@@ -114,14 +116,86 @@ assert.equal(app.chatCalls.length, 3)
 assert.equal(app.store.getState().getActiveProject().pendingChapter.text, first)
 assert.equal(app.store.getState().getActiveProject().generatedStory, '')
 console.log('PASS: invalid correction stops after three attempts with the draft intact')
+assert(app.store.getState().getActiveProject().pendingChapter.lastError)
+assert(app.saved.some((p) => p.pendingChapter?.lastError), 'failure is persisted with the draft')
 
-app = harness([first], ['', correction(first)], 'new')
+for (const edits of [
+  [{ before: 'not in the draft', after: 'replacement' }],
+  [{ before: 'Lan đã sửa xong', after: 'Lan sửa xong' }, { before: 'sửa xong đồng hồ.', after: 'sửa đồng hồ.' }]
+]) {
+  app = harness([first], [correction(first, edits), correction(first)], 'new')
+  app.store.setState({ projects: [{ ...app.project, outline: { ...app.project.outline, chapters: app.project.outline.chapters.slice(0, 1) } }] })
+  await app.store.getState().confirmAndWrite()
+  assert.equal(app.store.getState().getActiveProject().status, 'done')
+  assert.equal(app.store.getState().getActiveProject().generatedStory, first)
+  assert.equal(app.calls.length, 1, 'invalid patches never regenerate prose')
+  assert.equal(app.chatCalls.length, 2)
+  assert(app.chatCalls[1][1].content.includes('LOCAL VALIDATION FAILED:'))
+  assert(app.chatCalls[1][1].content.includes('SAME ORIGINAL draft'))
+}
+assert.equal(applyChapterCorrection(first, '```json\n' + correction(first) + '\n```').text, first)
+console.log('PASS: invalid exact/overlapping edits recover with validation feedback; fenced JSON is safe to parse')
+
+const invalidPatch = correction(first, [{ before: 'not in draft', after: 'x' }])
+app = harness([first], [invalidPatch, invalidPatch, invalidPatch], 'new')
 await app.store.getState().confirmAndWrite()
-assert.equal(app.chatCalls.length, 1, 'empty correction stops without repeating the same request')
+const failedDraft = structuredClone(app.store.getState().getActiveProject())
+assert.equal(app.chatCalls.length, 3)
+assert.equal(failedDraft.pendingChapter.text, first)
+assert.equal(failedDraft.generatedStory, '')
+const activity = app.load(path.resolve('src/renderer/src/services/projectActivity.ts'))
+assert.equal(activity.projectActivity(failedDraft).label, 'Gặp lỗi')
+assert.equal(activity.projectActivity(failedDraft, { isGenerating: true }).label, 'Đang viết')
+app = harness([], [correction(first)], 'new')
+app.store.setState({ projects: [{ ...failedDraft, outline: { ...failedDraft.outline, chapters: failedDraft.outline.chapters.slice(0, 1) } }], activeProjectId: failedDraft.id })
+await app.store.getState().continueWriting()
+assert.equal(app.calls.length, 0)
+assert.equal(app.store.getState().getActiveProject().pendingChapter, null)
+assert.equal(app.store.getState().getActiveProject().status, 'done')
+console.log('PASS: exhausted patches keep draft/error across restart, resume clears failure without rewriting')
+
+
+app = harness([first], ['', '', ''], 'new')
+await app.store.getState().confirmAndWrite()
+assert.equal(app.chatCalls.length, 3, 'empty correction stops after the shared three-attempt limit')
 assert.equal(app.store.getState().getActiveProject().pendingChapter.text, first)
 assert.match(app.store.getState().getActiveRuntime().error, /API_EMPTY_CONTENT/)
 assert.equal(app.store.getState().getActiveProject().generatedStory, '')
-console.log('PASS: empty correction retains draft and stops at one API call')
+console.log('PASS: empty correction retains draft and stops at three API calls')
+
+const conflictingMemory = memory(wrong)
+conflictingMemory.updates[0].kind = 'fact'
+app = harness([first, wrong], [correction(first), JSON.stringify({ edits: [], languageReview: reviewReport('vi'), memory: conflictingMemory }), correction(fixed, [edit])], 'new')
+await app.store.getState().confirmAndWrite()
+assert.equal(app.store.getState().getActiveProject().status, 'done')
+assert.equal(app.chatCalls.length, 3)
+assert.equal(app.calls.length, 2)
+assert(app.chatCalls[2][1].content.includes('kind=object'))
+assert.equal(app.store.getState().getActiveProject().memoryRecords[0].kind, 'object')
+console.log('PASS: real memory kind validation retries before committing and retains the original kind')
+
+for (const failures of [
+  [new Error('timeout'), correction(first)],
+  ['', correction(first)]
+]) {
+  app = harness([first], failures, 'new')
+  app.store.setState({ projects: [{ ...app.project, outline: { ...app.project.outline, chapters: app.project.outline.chapters.slice(0, 1) } }] })
+  await app.store.getState().confirmAndWrite()
+  assert.equal(app.store.getState().getActiveProject().status, 'done')
+  assert.equal(app.calls.length, 1)
+  assert.equal(app.chatCalls.length, 2)
+}
+app = harness([new Error('timeout'), first], [correction(first)], 'new')
+app.store.setState({ projects: [{ ...app.project, outline: { ...app.project.outline, chapters: app.project.outline.chapters.slice(0, 1) } }] })
+await app.store.getState().confirmAndWrite()
+assert.equal(app.calls.length, 2)
+assert.equal(app.store.getState().getActiveProject().status, 'done')
+app = harness([new Error('timeout'), new Error('timeout'), new Error('timeout')], [], 'new')
+await app.store.getState().confirmAndWrite()
+assert.equal(app.calls.length, 3)
+assert.match(app.store.getState().getActiveRuntime().error, /thủ công/)
+assert.equal(app.chatCalls.length, 0)
+console.log('PASS: writing/API failures recover or stop at three attempts for manual intervention')
 
 const { evidenceSentences } = app.load(path.resolve('src/renderer/src/services/sentenceEvidence.ts'))
 const { applyMemoryPayload } = app.load(path.resolve('src/renderer/src/services/detailedMemory.ts'))
@@ -152,7 +226,7 @@ for (const [draft, id, edits] of [
 for (const draft of ['「水だ。」\r\n水はきれいだ。', '  Water is clean. Next sentence.\nDone.']) {
   for (const sentence of evidenceSentences(draft)) assert.equal(draft.slice(sentence.start, sentence.end), sentence.text)
 }
-app = harness([first], [JSON.stringify({ edits: [], memory: sourceMemory('S1') })], 'new')
+app = harness([first], [JSON.stringify({ edits: [], languageReview: reviewReport('vi'), memory: sourceMemory('S1') })], 'new')
 app.store.setState({ projects: [{ ...app.project, outline: { ...app.project.outline, chapters: app.project.outline.chapters.slice(0, 1) } }] })
 await app.store.getState().confirmAndWrite()
 assert.equal(app.chatCalls.length, 1)
@@ -169,7 +243,7 @@ assert(chapterOutputBudget('ja', 3500).maxTokens > chapterOutputBudget('en', 350
 assert.equal(chapterOutputBudget('ja', 3500, 4000).remainingChars, 0)
 assert(chapterOutputBudget('ja', 3500, 4000).maxTokens >= 2048)
 assert.equal(chapterOutputBudget('custom', 100000).maxTokens, 16384)
-app = harness([{ text: '水が', finishReason: 'length' }, { text: '流れた。', finishReason: 'stop' }], [JSON.stringify({ edits: [], memory: sourceMemory('S1') })], 'new')
+app = harness([{ text: '水が', finishReason: 'length' }, { text: '流れた。', finishReason: 'stop' }], [JSON.stringify({ edits: [], languageReview: { language: 'ja', complete: true, checks: { meaning: true, orthography: true, entities: true, nativeStyle: true }, unresolved: [] }, memory: sourceMemory('S1') })], 'new')
 app.store.setState({ projects: [{ ...app.project, language: 'ja', duration: 10, outline: { ...app.project.outline, chapters: app.project.outline.chapters.slice(0, 1) } }] })
 await app.store.getState().confirmAndWrite()
 assert.equal(app.streamOptions[0].maxTokens, 6274)
@@ -177,4 +251,6 @@ assert.equal(app.streamOptions[1].maxTokens, chapterOutputBudget('ja', 3500, 2).
 assert(app.calls[1][1].content.includes('3498 characters remain'))
 assert.equal(app.store.getState().getActiveProject().generatedStory, '水が流れた。')
 assert.equal(app.chatCalls.length, 1)
+assert(app.chatCalls[0][1].content.includes('STORY PREMISE'))
+assert(app.chatCalls[0][0].content.includes('CONTEXTUAL NATIVE PROOFREADING'))
 console.log('PASS: Japanese writing and continuation receive language-aware remaining budgets; drafts survive and correction runs once')

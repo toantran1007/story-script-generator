@@ -1,15 +1,8 @@
 import fs from 'node:fs'
 import assert from 'node:assert/strict'
-import ts from 'typescript'
-
-function load(file) {
-  const module = { exports: {} }
-  const output = ts.transpileModule(fs.readFileSync(file, 'utf8'), {
-    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 }
-  }).outputText
-  new Function('module', 'exports', 'require', output)(module, module.exports, (id) => id === '@/services/textMetrics' ? load('src/renderer/src/services/textMetrics.ts') : {})
-  return module.exports
-}
+import { createLoader } from './lib/load-local-ts.mjs'
+const load = createLoader()
+const { plainNarration } = load('src/shared/plainNarration.ts')
 const prompts = load('src/renderer/src/services/promptEngine.ts')
 const { stripNarrationMarkup } = load('src/renderer/src/services/textCleanup.ts')
 const { formatSentenceLines, formatStoryWithHook } = load('src/shared/storyFormatting.ts')
@@ -29,7 +22,7 @@ for (const language of ['vi', 'ja', 'en']) {
 }
 assert(prompts.buildOutlinePrompt('A person finds a system.', 'dramatic', 'vi', 3, [], []).system.includes('CHARACTER VOICE'))
 const repair = prompts.buildLanguageRepairPrompt('“Wait!”', 'vi').system
-assert(repair.includes('Preserve dialogue quotation marks'))
+assert(repair.includes('without quotation marks'))
 assert(!repair.includes('explanations, quotation marks, lists'))
 console.log('PASS: planning, writing and language repair agree on direct speech and speaker/source identity')
 
@@ -41,13 +34,13 @@ const samples = [
 ]
 for (const [language, source] of samples) {
   const clean = stripNarrationMarkup(`# Title\n${source}`)
-  assert.equal(clean, source, 'cleanup must preserve the exact dialogue, quotes and attribution')
+  assert.equal(clean, plainNarration(source), 'cleanup preserves words and attribution with plain punctuation')
   const formatted = formatSentenceLines(clean, language)
-  assert.equal(formatted, source, 'sentence-per-line formatting preserves the spoken lines')
+  assert.equal(formatted, plainNarration(source), 'sentence-per-line formatting preserves spoken words')
   const spoken = source.split('\n')[1]
   assert.equal(verifiedHookExcerpt(source, JSON.stringify({ excerpt: spoken }), 1800), spoken)
-  assert(formatStoryWithHook(source, spoken, language).startsWith(spoken))
+  assert(formatStoryWithHook(source, spoken, language).startsWith(plainNarration(spoken)))
 }
-assert.equal(stripNarrationMarkup('“ĐỪNG LẠI GẦN!”'), '“ĐỪNG LẠI GẦN!”', 'shouted dialogue is not mistaken for a title')
-assert.equal(stripNarrationMarkup('(cười)\n“Đi thôi!”'), '“Đi thôi!”', 'production aside can be removed without deleting dialogue')
+assert.equal(stripNarrationMarkup('“ĐỪNG LẠI GẦN!”'), 'ĐỪNG LẠI GẦN.', 'shouted dialogue is not mistaken for a title')
+assert.equal(stripNarrationMarkup('(cười)\n“Đi thôi!”'), ' cười\nĐi thôi.', 'bracketed words preserved; only punctuation removed')
 console.log('PASS: Vietnamese/Japanese/English speech, thoughts and notices survive cleanup, line formatting and verbatim hook selection')

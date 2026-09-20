@@ -44,6 +44,7 @@ function boot() {
     cache.set(file, module)
     new Function('module', 'exports', 'require', 'setTimeout', 'clearTimeout', transpile(fs.readFileSync(file, 'utf8')))(
       module, module.exports, (id) => {
+        if (id.startsWith('@shared/')) return load(path.resolve('src/shared', `${id.slice(8)}.ts`))
         if (!id.startsWith('@/')) return require(id)
         const target = path.join(root, id.slice(2))
         return load(fs.existsSync(`${target}.ts`) ? `${target}.ts` : path.join(target, 'index.ts'))

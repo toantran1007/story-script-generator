@@ -1,4 +1,5 @@
 import type { Language } from '@/types'
+import { textWithoutRepetitionForCounting } from '@shared/textRepetition'
 
 /**
  * Tốc độ đọc thành tiếng, tính bằng KÝ TỰ mỗi phút (kể cả dấu cách).
@@ -25,6 +26,19 @@ export const CHARS_PER_MINUTE: Record<Language, number> = {
 
 /** Ngôn ngữ không tách từ bằng dấu cách — phải đếm theo ký tự. */
 const SPACELESS: Language[] = ['th', 'ja', 'zh']
+
+export function narrationChars(text: string, language: Language): number {
+  const normalized = textWithoutRepetitionForCounting(text || '').trim().replace(/\s+/gu, SPACELESS.includes(language) ? '' : ' ')
+  return Array.from(normalized).length
+}
+
+export function durationAssessment(text: string, minutes: number, language: Language, override?: number) {
+  const chars = narrationChars(text, language)
+  const target = targetCharsFor(minutes, language, override)
+  const ratio = target > 0 ? chars / target : 0
+  return { chars, target, minutes: chars / charsPerMinute(language, override),
+    outsideTolerance: ratio < 0.85, deviationPercent: Math.round((ratio - 1) * 100) }
+}
 
 /** Giới hạn hợp lệ cho tốc độ đọc tự khai (ký tự/phút). */
 export const READING_SPEED_MIN = 100
@@ -113,14 +127,14 @@ export function countText(text: string, language: Language): { value: number; un
   // văn bản không dùng dấu cách tách từ, đếm "từ" khi đó vô nghĩa.
   const avgTokenLen = t.replace(/\s/g, '').length / tokens.length
   if (SPACELESS.includes(language) || avgTokenLen > 12) {
-    return { value: t.replace(/\s/g, '').length, unit: 'ký tự' }
+    return { value: narrationChars(t, language), unit: 'ký tự' }
   }
   return { value: tokens.length, unit: 'từ' }
 }
 
 /** Thời lượng đọc thành tiếng ước tính, tính theo ký tự nên đúng cho mọi ngôn ngữ. */
 export function readingMinutes(text: string, language: Language, override?: number): number {
-  const chars = (text || '').trim().length
+  const chars = narrationChars(text, language)
   if (chars === 0) return 0
   return Math.max(1, Math.ceil(chars / charsPerMinute(language, override)))
 }

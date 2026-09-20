@@ -128,6 +128,7 @@ export class ProjectFileStore<T extends StoredProject> {
   }
 
   private materialize(directory: string, project: T): void {
+    const temp = join(directory, 'temp'); this.checkPath(temp); mkdirSync(temp, { recursive: true })
     const chapters = join(directory, 'chapters'); this.checkPath(chapters); mkdirSync(chapters, { recursive: true })
     this.atomic(join(directory, 'story.txt'), project.generatedStory || '')
     this.atomic(join(directory, 'hook.txt'), project.hookText || '')
@@ -217,6 +218,30 @@ export class ProjectFileStore<T extends StoredProject> {
     this.atomic(this.child('deleted-projects.json'), JSON.stringify(next))
     this.deleted = next
     this.eraseProjectDirectory(directory)
+  }
+
+  archive(id: string): void {
+    const directory = this.projectDir(id)
+    if (this.deleted[id]) return
+    const project = this.readDirectory(directory)
+    if (project.id !== id) throw new Error('Archive target id mismatch')
+    const entry: DeletedProject = { id, name: project.name, directory: `${id}-${randomUUID()}`, epoch: (project.storageEpoch || 0) + 1, deletedAt: new Date().toISOString() }
+    const target = this.child('trash', entry.directory)
+    this.atomic(this.child('deleted-projects.json'), JSON.stringify({ ...this.deleted, [id]: entry }))
+    this.deleted[id] = entry
+    renameSync(directory, target)
+  }
+
+  saveConverted(input: T): void {
+    const directory = this.projectDir(input.id)
+    const before = this.readDirectory(directory)
+    if (before.generatedStory !== input.generatedStory || JSON.stringify(before.chapterDocuments || []) !== JSON.stringify(input.chapterDocuments || [])) throw new Error('Conversion must preserve existing prose and chapter documents')
+    const archives = join(directory, 'archives'); this.checkPath(archives); mkdirSync(archives, { recursive: true })
+    const backup = join(archives, `before-long-story-${randomUUID()}.json`)
+    const content = JSON.stringify({ schemaVersion: 1, project: before })
+    this.atomic(backup, content)
+    if (readFileSync(backup, 'utf8') !== content) throw new Error('Conversion backup verification failed')
+    this.save(input)
   }
 
   listDeleted(): DeletedProject[] { return Object.values(this.deleted).filter((entry) => !entry.permanent) }

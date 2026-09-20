@@ -50,6 +50,7 @@ function createHarness(responses, inputType = 'idea', streamResponses = []) {
     }).outputText
     const resolve = (id) => {
       if (id === '@/services/apiService') return api
+      if (id.startsWith('@shared/')) return load(path.resolve('src/shared', `${id.slice(8)}.ts`))
       if (!id.startsWith('@/')) return require(id)
       const target = path.join(rendererRoot, id.slice(2))
       return load(fs.existsSync(`${target}.ts`) ? `${target}.ts` : path.join(target, 'index.ts'))
@@ -71,7 +72,7 @@ function createHarness(responses, inputType = 'idea', streamResponses = []) {
     ].map((key) => [key, []]))
   }
   store.setState({
-    projects: [{ ...createEmptyProject('test', 'Retry test'), ideaInputType: inputType,
+    projects: [{ ...createEmptyProject('test', 'Retry test'), writingEngine: 'chapter-v2', ideaInputType: inputType,
       idea: 'A lighthouse keeper finds a lost map.', language: 'en', currentStep: 2,
       questions: ['Who?'], answers: { 0: 'A lighthouse keeper.' },
       inspirationProfile: inputType === 'outline' ? profile : null }],
@@ -172,11 +173,11 @@ for (const [responses, shouldPass] of [
   [['x'.repeat(1500)], true],
   [['CANCEL'], false]
 ]) {
-  const correction = JSON.stringify({ edits: [], memory: { chapter: { summary: 'Opening.', events: [], state: [], openThreads: [] }, story: { facts: ['The opening happened.'], openThreads: [] } } })
+  const correction = JSON.stringify({ edits: [], languageReview: { language: 'vi', complete: true, checks: { meaning: true, orthography: true, entities: true, nativeStyle: true }, unresolved: [] }, memory: { chapter: { summary: 'Opening.', events: [], state: [], openThreads: [] }, story: { facts: ['The opening happened.'], openThreads: [] } } })
   const { store, calls, streamCalls } = createHarness(shouldPass ? [correction] : [], 'idea', responses)
   const project = store.getState().getActiveProject()
   store.setState({ projects: [{ ...project, idea: 'Isekai: a watch pulls a repairer into another world.',
-    language: 'vi', duration: 1, outline, enableHook: false }] })
+    language: 'vi', duration: 1, readingSpeed: 1500, outline, enableHook: false }] })
   await store.getState().confirmAndWrite()
   assert.equal(streamCalls.length, responses.length)
   assert.equal(calls.length, shouldPass ? 1 : 0, 'one correction+memory call, no second verification')

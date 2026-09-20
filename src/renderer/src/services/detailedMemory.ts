@@ -1,6 +1,7 @@
 import type { Project, MemoryDelta, MemoryRecord, ChapterDocument, ChapterMemory, MemoryEvidenceIssue } from '@/types'
 import type { MemoryPayload } from '@/services/chapterMemory'
 import { stripNarrationMarkup } from '@/services/textCleanup'
+import { knowledgeTerms } from '@/services/longStory/terms'
 
 export const MEMORY_CONTEXT_BUDGET = 10_000
 const normalize = (text: string): string => text.normalize('NFD').replace(/\p{Mark}/gu, '').toLowerCase().replace(/đ/g, 'd')
@@ -62,7 +63,7 @@ export function applyMemoryPayload(project: Project, chapter: number, chunk: num
   if (!payload.story && changes.length === 0 && records.size === 0) throw new Error('Khối đầu phải thiết lập ít nhất một dữ kiện có dẫn chứng.')
   for (const change of changes) {
     const before = records.get(change.id)
-    if (before && before.kind !== change.kind) throw new Error('Memory id không được đổi loại dữ kiện')
+    if (before && before.kind !== change.kind) throw new Error(`Memory id không được đổi loại dữ kiện: ${change.id}; giữ kind=${before.kind}, không dùng kind=${change.kind}.`)
     const located = payload.evidenceRanges && Object.hasOwn(payload.evidenceRanges, change.id)
     const range = payload.evidenceRanges?.[change.id]
     const evidence = located
@@ -116,10 +117,10 @@ export function applyMemoryPayload(project: Project, chapter: number, chunk: num
 export function selectMemoryContext(project: Project, chapter: number, budget = MEMORY_CONTEXT_BUDGET, extraQuery = ''): string {
   const records = memoryRecordsFor(project)
   const query = normalize([project.outline?.chapters[chapter - 1]?.title, project.outline?.chapters[chapter - 1]?.summary, project.userDirection, extraQuery].filter(Boolean).join(' '))
-  const terms = new Set(query.match(/[\p{L}\p{N}_-]{2,}/gu) || [])
+  const terms = knowledgeTerms(query)
   const index = new Map<string, Set<string>>()
   for (const record of records) {
-    for (const token of new Set(normalize(`${record.subject} ${record.text} ${record.related.join(' ')}`).match(/[\p{L}\p{N}_-]{2,}/gu) || [])) {
+    for (const token of knowledgeTerms(normalize(`${record.subject} ${record.text} ${record.related.join(' ')}`))) {
       const bucket = index.get(token) || new Set<string>(); bucket.add(record.id); index.set(token, bucket)
     }
   }
